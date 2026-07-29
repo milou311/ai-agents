@@ -1,39 +1,29 @@
 # AAOS Roadmap
 
-Aligned with `docs/AAOS_ARCHITECTURE_v1.md`.
-
-## Phase 0 — Constitution & Skeleton ✅
-
-- [x] Architecture Spec, ADR, coding rules, skeleton
-
+## Phase 0 — Constitution ✅
 ## Phase 1 — Modular Runtime ✅
 
-- [x] Models, Memory, Tools, AgentLoop, Telegram interface
+## Phase 2 — Planning & Knowledge (mostly done)
 
-## Phase 2 — Planning & Knowledge
-
-- [x] Heuristic Planner (`aaos.planner`)
-- [x] Knowledge store TXT/MD chunk search (`aaos.knowledge`)
-- [x] Tools: `knowledge_search`, `knowledge_ingest`
-- [x] Planner hints injected into AgentLoop
-- [x] Executor module for plan steps
-- [x] HTTP API (`aaos.interfaces.http`) — `/v1/chat`, knowledge endpoints
-- [x] CLI `scripts/ingest_knowledge.py`
-- [ ] Embeddings / semantic vector search
+- [x] Planner, Knowledge, Executor, HTTP API, CLI, knowledge tools
+- [ ] Embeddings / vector search
 - [ ] PDF/DOCX ingest
-- [ ] Auth on HTTP API
+- [ ] HTTP API auth
 
-## Phase 3 — Multi-Agent & Skills
+## Phase 3 — Multi-Agent & Skills (scaffold started)
 
-- [ ] Skill graphs
-- [ ] Supervisor + specialist agents
-- [ ] Plugin loader
+- [x] Skills data model + research_topic example
+- [x] Plugin loader scaffold (`aaos/plugins`)
+- [ ] Skill runner integrated into AgentLoop
+- [ ] Supervisor multi-agent
+- [ ] plugin.yaml dynamic load
 
-## Phase 4 — Production Hardening
+## Phase 4 — Hardening (scaffold started)
 
-- [ ] Permissions & audit log
-- [ ] Metrics / tracing
-- [ ] Multi-tenant upgrades
+- [x] Metrics in-process + `/health`
+- [x] Permission map + audit log helper
+- [ ] Enforce permissions in ToolRegistry
+- [ ] OpenTelemetry / Prometheus export
 
 ## Phase 5+ — Scale
 

@@ -12,11 +12,12 @@ import uuid
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from aaos.core.agent_loop import AgentLoop
 from aaos.knowledge import get_knowledge_store
 from aaos.memory import get_default_store
+from aaos.monitoring import get_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ async def _startup():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "system": "aaos"}
+    return {"status": "ok", "system": "aaos", "metrics": get_metrics().snapshot()}
 
 
 @app.post("/v1/chat", response_model=ChatResponse)
@@ -61,9 +62,13 @@ async def chat(body: ChatBody):
         raise HTTPException(400, "message required")
     request_id = str(uuid.uuid4())
     chat_id = body.chat_id or body.user_id
+    metrics = get_metrics()
+    metrics.inc("http.chat.requests")
     try:
         reply = await _loop.run(body.user_id, chat_id, body.message)
+        metrics.inc("http.chat.ok")
     except Exception as e:
+        metrics.inc("http.chat.errors")
         logger.exception("chat failed")
         raise HTTPException(500, str(e))
     return ChatResponse(request_id=request_id, reply=reply)
@@ -72,6 +77,7 @@ async def chat(body: ChatBody):
 @app.post("/v1/knowledge/ingest")
 async def knowledge_ingest(body: IngestBody):
     info = await _knowledge.ingest_text(body.source, body.text, title=body.title)
+    get_metrics().inc("knowledge.ingest")
     return info
 
 
