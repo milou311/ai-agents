@@ -2,22 +2,22 @@
 
 Aligned with `docs/AAOS_ARCHITECTURE_v1.md`.
 
-## Phase 0 — Constitution & Skeleton (current)
+## Phase 0 — Constitution & Skeleton
 
 - [x] Publish Architecture Spec v1.0
-- [ ] Create `aaos/` package tree with Interfaces (Protocols)
-- [ ] Add ADR folder and template
-- [ ] Wrap legacy `agents/` behind thin adapters (no big-bang rewrite)
-- [ ] Document coding-agent rules in README
+- [x] Create `aaos/` package tree with Interfaces (Protocols)
+- [x] Add ADR folder and template
+- [x] Document coding-agent rules in README
+- [x] Design-note template
 
 ## Phase 1 — Modular Runtime
 
-- [ ] `aaos.models` with Groq + OpenAI providers + failover
-- [ ] `aaos.memory` (SQLite) extracted from legacy
+- [x] `aaos.models` gateway (Groq + OpenAI failover, tool_use_failed recovery)
+- [x] `aaos.memory` SQLite store + legacy shim
 - [ ] `aaos.tools` registry + migrate existing tools
-- [ ] `aaos.core` orchestrator
+- [ ] Wire `AgentCore` / Orchestrator to ModelGateway
 - [ ] `aaos.interfaces.telegram` adapter using Core only
-- [ ] Unit/contract tests for Core and Tools
+- [ ] Unit/contract tests expanded for Core and Tools
 
 ## Phase 2 — Planning & Knowledge
 
