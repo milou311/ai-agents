@@ -1,0 +1,34 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+.env
+.env.*
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs & local data
+*.log
+logs/
+data/
+memory/
+
+# Audio files (temporary)
+*.wav
+*.mp3
+*.ogg
+
+# Model cache
+.cache/
