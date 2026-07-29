@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import lru_cache
 
 
@@ -18,6 +18,8 @@ class Settings:
     history_limit: int = 8
     max_tool_rounds: int = 5
     max_tokens: int = 1024
+    api_bearer_token: str = ""  # if set, HTTP API requires Authorization: Bearer ...
+    use_supervisor: bool = False
 
     @staticmethod
     def from_env() -> "Settings":
@@ -38,6 +40,9 @@ class Settings:
             history_limit=int(os.getenv("AAOS_HISTORY_LIMIT", "8")),
             max_tool_rounds=int(os.getenv("AAOS_MAX_TOOL_ROUNDS", "5")),
             max_tokens=int(os.getenv("AAOS_MAX_TOKENS", "1024")),
+            api_bearer_token=os.getenv("AAOS_API_TOKEN", ""),
+            use_supervisor=os.getenv("AAOS_USE_SUPERVISOR", "").lower()
+            in {"1", "true", "yes"},
         )
 
 
