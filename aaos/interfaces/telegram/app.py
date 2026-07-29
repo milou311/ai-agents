@@ -1,8 +1,5 @@
 """
 Telegram Interface Adapter (AAOS).
-
-Translates Telegram updates ↔ AgentRequest / AgentLoop.
-No business logic beyond channel concerns (voice, photos, commands UI).
 """
 
 from __future__ import annotations
@@ -10,7 +7,6 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,8 +24,9 @@ import edge_tts
 
 from aaos.config import get_settings
 from aaos.core.agent_loop import AgentLoop
-from aaos.core.types import AgentRequest
+from aaos.core.supervisor import Supervisor
 from aaos.memory import get_default_store
+from aaos.knowledge import get_knowledge_store
 
 load_dotenv()
 
@@ -41,7 +38,9 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 loop = AgentLoop()
+supervisor = Supervisor(loop)
 store = get_default_store()
+knowledge = get_knowledge_store()
 groq_client = Groq(api_key=settings.groq_api_key) if settings.groq_api_key else None
 
 TEMP_DIR = Path(tempfile.gettempdir()) / "mueen_voice"
@@ -54,14 +53,16 @@ RATE_LIMIT_MSG = (
 
 
 async def _run_agent(user_id: int, chat_id: int, text: str, extra: str = "") -> str:
+    if settings.use_supervisor and not extra:
+        return await supervisor.run(user_id, chat_id, text)
     return await loop.run(user_id, chat_id, text, extra_context=extra)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "مرحباً! 👋\n\n"
-        "أنا *مُعين*، مساعدك الشخصي الذكي.\n\n"
-        "✅ البحث · الملفات · المهام · التذكيرات · الملاحظات · الصوت · الصور\n\n"
+        "أنا *مُعين* — AAOS.\n\n"
+        "✅ بحث · ملفات · مهام · تذكيرات · معرفة · صوت · صور\n\n"
         "/help · /reset · /tasks · /notes"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -70,7 +71,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "أرسل رسالة نصية أو صوتية.\n"
-        "أمثلة: ابحث عن … · أضف مهمة … · ذكّرني بعد 30 دقيقة · احفظ ملاحظة …\n"
+        "أمثلة: ابحث عن … · أضف مهمة … · احفظ في المعرفة …\n"
         "/reset لمسح المحادثة",
     )
 
@@ -99,7 +100,9 @@ async def notes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("لا توجد ملاحظات محفوظة.")
         return
     lines = [f"• *{n['key']}*: {n['value']}" for n in notes]
-    await update.message.reply_text("الملاحظات:\n" + "\n".join(lines), parse_mode="Markdown")
+    await update.message.reply_text(
+        "الملاحظات:\n" + "\n".join(lines), parse_mode="Markdown"
+    )
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -164,7 +167,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if len(reply) < 500 and RATE_LIMIT_MSG not in reply:
             try:
-                await context.bot.send_chat_action(chat_id=chat_id, action="record_voice")
+                await context.bot.send_chat_action(
+                    chat_id=chat_id, action="record_voice"
+                )
                 mp3_path = str(TEMP_DIR / f"{user_id}_reply.mp3")
                 await text_to_speech(reply, mp3_path)
                 with open(mp3_path, "rb") as audio_file:
@@ -193,9 +198,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
     try:
-        description = (
-            "استلمت الصورة. صف ما تريد وسأساعدك."
-        )
+        description = "استلمت الصورة. صف ما تريد وسأساعدك."
         if groq_client:
             try:
                 import base64
@@ -261,6 +264,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text_exts = {".txt", ".md", ".py", ".json", ".csv", ".log", ".html", ".xml"}
     if Path(filename).suffix.lower() in text_exts:
         content = dest.read_text(encoding="utf-8", errors="replace")[:4000]
+        # Also ingest into knowledge for later search
+        try:
+            await knowledge.ingest_text(
+                f"telegram:{user_id}:{filename}", content, title=filename
+            )
+        except Exception:
+            pass
         prompt = f"ملف '{filename}':\n\n{content}\n\nلخّصه أو ساعد حسب الطلب."
         if update.message.caption:
             prompt += f"\nالطلب: {update.message.caption}"
@@ -296,7 +306,9 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("reset", reset))
     application.add_handler(CommandHandler("tasks", tasks_cmd))
     application.add_handler(CommandHandler("notes", notes_cmd))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)
+    )
     application.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
@@ -306,7 +318,10 @@ def build_application() -> Application:
 
     async def post_init(app: Application):
         await store.init()
-        logger.info("AAOS Telegram interface ready")
+        await knowledge.init()
+        logger.info(
+            "AAOS Telegram ready (supervisor=%s)", settings.use_supervisor
+        )
 
     application.post_init = post_init
     return application
