@@ -1,6 +1,7 @@
 """
 Agent core with tool-calling loop (multi-step automatic execution).
 Uses Groq + Llama models that support tools.
+Handles rate limits (429) with fallback models and clear user messages.
 """
 
 import sys
@@ -13,8 +14,9 @@ if str(_ROOT) not in sys.path:
 import json
 import logging
 import os
+import time
 
-from groq import Groq
+from groq import Groq, RateLimitError, APIStatusError
 
 from agents.tools.web_search import web_search
 from agents.tools.file_ops import read_file, write_file, list_files, delete_file
@@ -24,25 +26,28 @@ from agents import memory
 
 logger = logging.getLogger(__name__)
 
+# Primary + fallback models (all free-tier friendly on Groq)
+MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "gemma2-9b-it",
+]
+
 SYSTEM_PROMPT = """أنت مساعد شخصي ذكي اسمه "مُعين".
+تتحدث بالعربية المبسطة أو الدارجة حسب المستخدم، وبالإنجليزية بطلاقة.
 
-نتحدث بالعربية الفصحى المبسطة أو الدارجة حسب أسلوب المستخدم، وبالإنجليزية بطلاقة.
+قدراتك (استخدم الأدوات عند الحاجة):
+- البحث على الإنترنت
+- قراءة/كتابة الملفات
+- المهام والتذكيرات والملاحظات
+- استدعاء APIs
+- تنفيذ عدة خطوات تلقائياً
 
-## قدراتك الحقيقية (استخدم الأدوات عند الحاجة):
-1. **البحث على الإنترنت** — عندما يحتاج المستخدم معلومات حديثة أو حقائق.
-2. **قراءة وكتابة الملفات** — احفظ ملاحظات طويلة، قوائم، أكواد، ملخصات.
-3. **المهام والتذكيرات** — أضف مهام، أكملها، اضبط تذكيرات.
-4. **الملاحظات الدائمة** — احفظ معلومات مهمة عن المستخدم (اسمه، تفضيلاته...).
-5. **استدعاء APIs** — اتصل بأي واجهة HTTP عامة.
-6. **تنفيذ مهام متعددة تلقائياً** — يمكنك استدعاء عدة أدوات متتالية حتى تنجز المطلوب.
-
-## قواعد السلوك:
-- كن مختصراً وواضحاً ما لم يُطلب التفصيل.
-- إذا لم تكن متأكداً، قل ذلك ولا تختلق معلومات.
-- استخدم الأدوات بدلاً من التخمين عندما تكون المعلومة قابلة للبحث أو الحفظ.
-- بعد استخدام أداة، لخّص النتيجة للمستخدم بشكل مفيد.
-- لا تذكر أسماء الأدوات التقنية للمستخدم إلا إذا سأل.
-- كن ودوداً ومحترماً ومهنياً.
+قواعد:
+- كن مختصراً وواضحاً.
+- لا تختلق معلومات.
+- استخدم الأدوات بدل التخمين.
+- لا تذكر أسماء الأدوات التقنية إلا إذا سُئلت.
 """
 
 TOOLS = [
@@ -50,12 +55,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "البحث على الإنترنت عن معلومات حديثة أو عامة",
+            "description": "البحث على الإنترنت",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "نص البحث"},
-                    "max_results": {"type": "integer", "description": "عدد النتائج (افتراضي 5)"},
+                    "query": {"type": "string"},
+                    "max_results": {"type": "integer"},
                 },
                 "required": ["query"],
             },
@@ -65,12 +70,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "قراءة محتوى ملف محفوظ للمستخدم",
+            "description": "قراءة ملف محفوظ",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "filename": {"type": "string", "description": "اسم الملف"},
-                },
+                "properties": {"filename": {"type": "string"}},
                 "required": ["filename"],
             },
         },
@@ -79,7 +82,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "كتابة أو حفظ محتوى في ملف",
+            "description": "حفظ محتوى في ملف",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -94,7 +97,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "عرض قائمة الملفات المحفوظة للمستخدم",
+            "description": "عرض الملفات المحفوظة",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -114,7 +117,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "manage_tasks",
-            "description": "إدارة المهام: إضافة، عرض، إكمال، إلغاء",
+            "description": "إدارة المهام: add|list|complete|cancel",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -136,14 +139,14 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "manage_reminders",
-            "description": "ضبط تذكير يُرسل لاحقاً عبر تليجرام",
+            "description": "ضبط تذكير",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["add"]},
                     "message": {"type": "string"},
                     "minutes_from_now": {"type": "integer"},
-                    "remind_at": {"type": "string", "description": "ISO datetime"},
+                    "remind_at": {"type": "string"},
                 },
                 "required": ["action", "message"],
             },
@@ -153,7 +156,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "manage_notes",
-            "description": "حفظ أو استرجاع ملاحظات دائمة عن المستخدم",
+            "description": "ملاحظات دائمة: set|get|list",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -169,7 +172,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "call_api",
-            "description": "استدعاء واجهة HTTP API خارجية (GET/POST)",
+            "description": "استدعاء HTTP API",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -184,12 +187,37 @@ TOOLS = [
     },
 ]
 
+RATE_LIMIT_MSG = (
+    "⏳ تم استهلاك الحصة اليومية من خدمة الذكاء الاصطناعي.\n"
+    "حاول مرة أخرى لاحقاً (عادةً تتجدد الحصة يومياً)."
+)
+
 
 class AgentCore:
     def __init__(self):
         self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-        self.model = "llama-3.3-70b-versatile"
-        self.max_tool_rounds = 8
+        self.models = MODELS
+        self.max_tool_rounds = 5  # fewer rounds = fewer tokens
+
+    def _chat_with_fallback(self, **kwargs):
+        """Try models in order; on 429 switch to next model."""
+        last_error = None
+        for model in self.models:
+            try:
+                return self.client.chat.completions.create(model=model, **kwargs)
+            except RateLimitError as e:
+                logger.warning("Rate limit on %s: %s", model, e)
+                last_error = e
+                time.sleep(0.5)
+                continue
+            except APIStatusError as e:
+                if e.status_code == 429:
+                    logger.warning("429 on %s", model)
+                    last_error = e
+                    time.sleep(0.5)
+                    continue
+                raise
+        raise last_error or RateLimitError("All models rate-limited", response=None, body=None)
 
     async def _execute_tool(self, name: str, args: dict, user_id: int, chat_id: int) -> str:
         try:
@@ -249,66 +277,86 @@ class AgentCore:
         user_message: str,
         extra_context: str = "",
     ) -> str:
-        history = await memory.get_history(user_id, limit=20)
+        # Keep history short to save tokens (was 20)
+        history = await memory.get_history(user_id, limit=8)
 
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         if extra_context:
-            messages.append({"role": "system", "content": extra_context})
+            messages.append({"role": "system", "content": extra_context[:500]})
         messages.extend(history)
         messages.append({"role": "user", "content": user_message})
 
         await memory.add_message(user_id, "user", user_message)
 
-        for _ in range(self.max_tool_rounds):
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                tools=TOOLS,
-                tool_choice="auto",
-                temperature=0.6,
-                max_tokens=2048,
-            )
-
-            msg = response.choices[0].message
-
-            if not msg.tool_calls:
-                reply = msg.content or ""
-                await memory.add_message(user_id, "assistant", reply)
-                return reply
-
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": msg.content or "",
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments,
-                            },
-                        }
-                        for tc in msg.tool_calls
-                    ],
-                }
-            )
-
-            for tc in msg.tool_calls:
-                name = tc.function.name
+        try:
+            for _ in range(self.max_tool_rounds):
                 try:
-                    args = json.loads(tc.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                result = await self._execute_tool(name, args, user_id, chat_id)
+                    response = self._chat_with_fallback(
+                        messages=messages,
+                        tools=TOOLS,
+                        tool_choice="auto",
+                        temperature=0.6,
+                        max_tokens=1024,  # lower cap to save tokens
+                    )
+                except (RateLimitError, APIStatusError) as e:
+                    if isinstance(e, RateLimitError) or getattr(e, "status_code", None) == 429:
+                        await memory.add_message(user_id, "assistant", RATE_LIMIT_MSG)
+                        return RATE_LIMIT_MSG
+                    raise
+
+                msg = response.choices[0].message
+
+                if not msg.tool_calls:
+                    reply = msg.content or ""
+                    await memory.add_message(user_id, "assistant", reply)
+                    return reply
+
                 messages.append(
                     {
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": result,
+                        "role": "assistant",
+                        "content": msg.content or "",
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments,
+                                },
+                            }
+                            for tc in msg.tool_calls
+                        ],
                     }
                 )
 
-        final = "أنجزت أكبر عدد ممكن من الخطوات. حاول تقسيم الطلب إن أمكن."
-        await memory.add_message(user_id, "assistant", final)
-        return final
+                for tc in msg.tool_calls:
+                    name = tc.function.name
+                    try:
+                        args = json.loads(tc.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = await self._execute_tool(name, args, user_id, chat_id)
+                    # Truncate long tool results to save tokens in next round
+                    if len(result) > 2000:
+                        result = result[:2000] + "\n...(مقطوع)"
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": result,
+                        }
+                    )
+
+            final = "أنجزت أكبر عدد ممكن من الخطوات. حاول تقسيم الطلب إن أمكن."
+            await memory.add_message(user_id, "assistant", final)
+            return final
+
+        except (RateLimitError, APIStatusError) as e:
+            if isinstance(e, RateLimitError) or getattr(e, "status_code", None) == 429:
+                await memory.add_message(user_id, "assistant", RATE_LIMIT_MSG)
+                return RATE_LIMIT_MSG
+            logger.exception("API error")
+            return f"عذراً، حدث خطأ في الخدمة: {e}"
+        except Exception as e:
+            logger.exception("Agent run error")
+            return f"عذراً، حدث خطأ: {e}"

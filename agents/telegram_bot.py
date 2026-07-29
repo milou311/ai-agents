@@ -1,19 +1,10 @@
 """
 مُعین — Advanced Personal Assistant Telegram Bot
--------------------------------------------------
-Features:
-- Tool calling (web search, files, tasks, reminders, notes, APIs)
-- Multi-step automatic task execution
-- Persistent SQLite memory
-- Voice messages (STT via Groq Whisper + TTS via edge-tts)
-- Image / document handling
-- Reminders background job
 """
 
 import sys
 from pathlib import Path
 
-# Bootstrap: make project root importable when run as script
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -32,7 +23,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from groq import Groq
+from groq import Groq, RateLimitError, APIStatusError
 import edge_tts
 
 from agents.agent_core import AgentCore
@@ -51,6 +42,11 @@ agent = AgentCore()
 
 TEMP_DIR = Path(tempfile.gettempdir()) / "mueen_voice"
 TEMP_DIR.mkdir(exist_ok=True)
+
+RATE_LIMIT_MSG = (
+    "⏳ تم استهلاك الحصة اليومية من خدمة الذكاء الاصطناعي.\n"
+    "حاول مرة أخرى لاحقاً (عادةً تتجدد الحصة يومياً)."
+)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -122,14 +118,19 @@ async def notes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def transcribe_voice(file_path: str) -> str:
-    with open(file_path, "rb") as f:
-        transcription = groq_client.audio.transcriptions.create(
-            file=(Path(file_path).name, f.read()),
-            model="whisper-large-v3",
-            language="ar",
-            response_format="text",
-        )
-    return transcription if isinstance(transcription, str) else transcription.text
+    try:
+        with open(file_path, "rb") as f:
+            transcription = groq_client.audio.transcriptions.create(
+                file=(Path(file_path).name, f.read()),
+                model="whisper-large-v3",
+                language="ar",
+                response_format="text",
+            )
+        return transcription if isinstance(transcription, str) else transcription.text
+    except (RateLimitError, APIStatusError) as e:
+        if isinstance(e, RateLimitError) or getattr(e, "status_code", None) == 429:
+            raise RateLimitError("Whisper rate limited", response=getattr(e, "response", None), body=getattr(e, "body", None))
+        raise
 
 
 async def text_to_speech(text: str, out_path: str, voice: str = "ar-SA-HamedNeural") -> str:
@@ -173,7 +174,12 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(ogg_path)
 
     try:
-        transcript = await transcribe_voice(ogg_path)
+        try:
+            transcript = await transcribe_voice(ogg_path)
+        except (RateLimitError, APIStatusError):
+            await update.message.reply_text(RATE_LIMIT_MSG)
+            return
+
         if not transcript.strip():
             await update.message.reply_text("لم أتمكن من فهم الصوت. حاول مرة أخرى.")
             return
@@ -189,16 +195,19 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text(reply)
 
-        if len(reply) < 500:
-            await context.bot.send_chat_action(chat_id=chat_id, action="record_voice")
-            mp3_path = str(TEMP_DIR / f"{user_id}_reply.mp3")
-            await text_to_speech(reply, mp3_path)
-            with open(mp3_path, "rb") as audio_file:
-                await update.message.reply_voice(voice=InputFile(audio_file))
+        if len(reply) < 500 and RATE_LIMIT_MSG not in reply:
             try:
-                os.remove(mp3_path)
-            except OSError:
-                pass
+                await context.bot.send_chat_action(chat_id=chat_id, action="record_voice")
+                mp3_path = str(TEMP_DIR / f"{user_id}_reply.mp3")
+                await text_to_speech(reply, mp3_path)
+                with open(mp3_path, "rb") as audio_file:
+                    await update.message.reply_voice(voice=InputFile(audio_file))
+                try:
+                    os.remove(mp3_path)
+                except OSError:
+                    pass
+            except Exception:
+                pass  # TTS failure is non-critical
 
     except Exception as e:
         logger.exception("handle_voice error")
@@ -228,6 +237,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             import base64
             b64 = base64.b64encode(f.read()).decode()
 
+        description = None
         try:
             response = groq_client.chat.completions.create(
                 model="llama-3.2-90b-vision-preview",
@@ -243,20 +253,23 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         ],
                     }
                 ],
-                max_tokens=1024,
+                max_tokens=512,
             )
             description = response.choices[0].message.content
+        except (RateLimitError, APIStatusError):
+            await update.message.reply_text(RATE_LIMIT_MSG)
+            return
         except Exception:
             description = (
-                "استلمت الصورة. حالياً نموذج الرؤية غير متاح مؤقتاً، "
-                "لكن يمكنك وصف ما تريد فعله بها وسأساعدك."
+                "استلمت الصورة. نموذج الرؤية غير متاح حالياً، "
+                "صف ما تريد وسأساعدك."
             )
 
         reply = await agent.run(
             user_id,
             chat_id,
             f"[صورة] {caption}\n\nوصف الصورة: {description}",
-            extra_context="المستخدم أرسل صورة. استخدم الوصف أعلاه للرد.",
+            extra_context="المستخدم أرسل صورة.",
         )
         await update.message.reply_text(reply)
 
@@ -287,10 +300,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text_exts = {".txt", ".md", ".py", ".json", ".csv", ".log", ".html", ".xml"}
     if Path(filename).suffix.lower() in text_exts:
-        content = dest.read_text(encoding="utf-8", errors="replace")[:8000]
-        prompt = f"المستخدم أرسل ملف '{filename}'. هذا محتواه:\n\n{content}\n\nلخّصه أو ساعد حسب طلبه."
+        content = dest.read_text(encoding="utf-8", errors="replace")[:4000]
+        prompt = f"ملف '{filename}':\n\n{content}\n\nلخّصه أو ساعد حسب الطلب."
         if update.message.caption:
-            prompt += f"\nطلب المستخدم: {update.message.caption}"
+            prompt += f"\nالطلب: {update.message.caption}"
         reply = await agent.run(user_id, chat_id, prompt)
         await update.message.reply_text(reply)
     else:
