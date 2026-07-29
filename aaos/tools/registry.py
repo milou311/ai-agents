@@ -69,6 +69,7 @@ def build_default_registry() -> ToolRegistry:
         manage_reminders,
         manage_notes,
     )
+    from aaos.knowledge import get_knowledge_store
 
     reg = ToolRegistry()
 
@@ -230,6 +231,49 @@ def build_default_registry() -> ToolRegistry:
                 },
             },
             "required": ["url"],
+        },
+    )
+
+    async def _knowledge_search(args, ctx):
+        ks = get_knowledge_store()
+        return await ks.search_as_text(args.get("query", ""), limit=int(args.get("limit", 5)))
+
+    async def _knowledge_ingest(args, ctx):
+        ks = get_knowledge_store()
+        text = args.get("text", "")
+        source = args.get("source", f"user:{ctx.get('user_id')}")
+        title = args.get("title") or source
+        if not text.strip():
+            return "لا يوجد نص للإدخال."
+        info = await ks.ingest_text(source, text, title=title)
+        return f"تم إدخال المعرفة: doc={info['document_id']} chunks={info['chunks']}"
+
+    reg.register(
+        "knowledge_search",
+        _knowledge_search,
+        "Search the local knowledge base (ingested documents)",
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer"},
+            },
+            "required": ["query"],
+        },
+    )
+
+    reg.register(
+        "knowledge_ingest",
+        _knowledge_ingest,
+        "Ingest plain text into the knowledge base",
+        {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "source": {"type": "string"},
+                "title": {"type": "string"},
+            },
+            "required": ["text"],
         },
     )
 

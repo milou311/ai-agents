@@ -1,17 +1,19 @@
 """
 AgentLoop — multi-step tool-calling runtime.
 
-Uses ModelGateway + MemoryStore + ToolRegistry only (no provider SDKs).
+Uses ModelGateway + MemoryStore + ToolRegistry + Planner (hints only).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Optional
 
 from aaos.config import get_settings
 from aaos.memory import MemoryStore, get_default_store
 from aaos.models import ModelGateway, ChatResult, SyntheticToolCall
+from aaos.planner import Planner
 from aaos.tools import ToolRegistry, build_default_registry
 
 logger = logging.getLogger(__name__)
@@ -20,16 +22,16 @@ SYSTEM_PROMPT = """أنت مساعد شخصي ذكي اسمه "مُعين".
 نتحدث بالعربية المبسطة أو الدارجة حسب المستخدم، وبالإنجليزية بطلاقة.
 
 قدراتك (استخدم الأدوات عند الحاجة فقط):
-- البحث على الإنترنت للمعلومات الحديثة
+- البحث على الإنترنت
 - قراءة/كتابة الملفات
-- المهام والتذكيرات والملاحظات الدائمة
+- المهام والتذكيرات والملاحظات
+- قاعدة المعرفة المحلية (knowledge_search / knowledge_ingest)
 - استدعاء APIs
 
-قواعد مهمة:
+قواعد:
 - كن مختصراً وواضحاً.
 - لا تختلق معلومات.
-- إذا لم تجد معلومة في الذاكرة أو الأدوات، قل ذلك بصراحة.
-- أجب مباشرة على الأسئلة العامة دون أدوات إذا لم تكن بحاجة لبحث أو حفظ.
+- إذا وُجدت خطة مقترحة في السياق، اتبعها إن كانت مناسبة.
 - لا تذكر أسماء الأدوات التقنية إلا إذا سُئلت.
 """
 
@@ -54,11 +56,13 @@ class AgentLoop:
         gateway: Optional[ModelGateway] = None,
         memory: Optional[MemoryStore] = None,
         tools: Optional[ToolRegistry] = None,
+        planner: Optional[Planner] = None,
     ):
         self.settings = get_settings()
         self.gateway = gateway or ModelGateway()
         self.memory = memory or get_default_store()
         self.tools = tools or build_default_registry()
+        self.planner = planner or Planner()
 
     async def run(
         self,
@@ -70,7 +74,22 @@ class AgentLoop:
         limit = self.settings.history_limit
         history = await self.memory.get_history(user_id, limit=limit)
 
+        plan = self.planner.plan(user_message)
+        plan_hint = ""
+        if not plan.passthrough and plan.steps:
+            summary = "; ".join(
+                f"{s.id}:{s.action}"
+                + (f"/{s.tool}" if s.tool else "")
+                for s in plan.steps
+            )
+            plan_hint = (
+                f"خطة مقترحة (اختيارية): goal={plan.goal!r}; "
+                f"risk={plan.risk_level}; steps=[{summary}]"
+            )
+
         messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        if plan_hint:
+            messages.append({"role": "system", "content": plan_hint[:500]})
         if extra_context:
             messages.append({"role": "system", "content": extra_context[:500]})
         messages.extend(history)
@@ -119,7 +138,10 @@ class AgentLoop:
                 assert isinstance(result, ChatResult)
 
                 if not result.tool_calls:
-                    reply = result.content or "لم أتمكن من إنشاء رد. حاول إعادة صياغة السؤال."
+                    reply = (
+                        result.content
+                        or "لم أتمكن من إنشاء رد. حاول إعادة صياغة السؤال."
+                    )
                     await self.memory.add_message(user_id, "assistant", reply)
                     return reply
 
@@ -133,7 +155,7 @@ class AgentLoop:
                                 "type": "function",
                                 "function": {
                                     "name": tc.name,
-                                    "arguments": __import__("json").dumps(
+                                    "arguments": json.dumps(
                                         tc.arguments, ensure_ascii=False
                                     ),
                                 },
