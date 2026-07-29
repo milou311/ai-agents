@@ -3,11 +3,18 @@ Agent core with tool-calling loop (multi-step automatic execution).
 Uses Groq + Llama models that support tools.
 """
 
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 import json
 import logging
-from typing import List, Optional
-from groq import Groq
 import os
+
+from groq import Groq
 
 from agents.tools.web_search import web_search
 from agents.tools.file_ops import read_file, write_file, list_files, delete_file
@@ -19,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """أنت مساعد شخصي ذكي اسمه "مُعين".
 
-تتحدث بالعربية الفصحى المبسطة أو الدارجة حسب أسلوب المستخدم، وبالإنجليزية بطلاقة.
+نتحدث بالعربية الفصحى المبسطة أو الدارجة حسب أسلوب المستخدم، وبالإنجليزية بطلاقة.
 
 ## قدراتك الحقيقية (استخدم الأدوات عند الحاجة):
 1. **البحث على الإنترنت** — عندما يحتاج المستخدم معلومات حديثة أو حقائق.
@@ -182,7 +189,7 @@ class AgentCore:
     def __init__(self):
         self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
         self.model = "llama-3.3-70b-versatile"
-        self.max_tool_rounds = 8  # multi-step automatic execution
+        self.max_tool_rounds = 8
 
     async def _execute_tool(self, name: str, args: dict, user_id: int, chat_id: int) -> str:
         try:
@@ -264,13 +271,11 @@ class AgentCore:
 
             msg = response.choices[0].message
 
-            # No tool calls → final answer
             if not msg.tool_calls:
                 reply = msg.content or ""
                 await memory.add_message(user_id, "assistant", reply)
                 return reply
 
-            # Append assistant message with tool_calls
             messages.append(
                 {
                     "role": "assistant",
@@ -304,7 +309,6 @@ class AgentCore:
                     }
                 )
 
-        # Safety: if still looping
         final = "أنجزت أكبر عدد ممكن من الخطوات. حاول تقسيم الطلب إن أمكن."
         await memory.add_message(user_id, "assistant", final)
         return final

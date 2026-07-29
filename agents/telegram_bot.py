@@ -10,11 +10,17 @@ Features:
 - Reminders background job
 """
 
+import sys
+from pathlib import Path
+
+# Bootstrap: make project root importable when run as script
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 import os
 import logging
-import asyncio
 import tempfile
-from pathlib import Path
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -43,12 +49,9 @@ logger = logging.getLogger(__name__)
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 agent = AgentCore()
 
-# Folder for temporary voice files
 TEMP_DIR = Path(tempfile.gettempdir()) / "mueen_voice"
 TEMP_DIR.mkdir(exist_ok=True)
 
-
-# ──────────────────────────── Commands ────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -118,28 +121,22 @@ async def notes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("الملاحظات:\n" + "\n".join(lines), parse_mode="Markdown")
 
 
-# ──────────────────────────── Voice helpers ────────────────────────────
-
 async def transcribe_voice(file_path: str) -> str:
-    """Speech-to-Text using Groq Whisper."""
     with open(file_path, "rb") as f:
         transcription = groq_client.audio.transcriptions.create(
             file=(Path(file_path).name, f.read()),
             model="whisper-large-v3",
-            language="ar",  # auto-detect also works, but ar helps
+            language="ar",
             response_format="text",
         )
     return transcription if isinstance(transcription, str) else transcription.text
 
 
 async def text_to_speech(text: str, out_path: str, voice: str = "ar-SA-HamedNeural") -> str:
-    """Text-to-Speech using edge-tts (free, high quality)."""
     communicate = edge_tts.Communicate(text, voice)
     await communicate.save(out_path)
     return out_path
 
-
-# ──────────────────────────── Message handlers ────────────────────────────
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -150,7 +147,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         reply = await agent.run(user_id, chat_id, text)
-        # Telegram limit ~4096 chars
         if len(reply) > 4000:
             for i in range(0, len(reply), 4000):
                 await update.message.reply_text(reply[i : i + 4000])
@@ -177,26 +173,22 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await file.download_to_drive(ogg_path)
 
     try:
-        # Transcribe
         transcript = await transcribe_voice(ogg_path)
         if not transcript.strip():
             await update.message.reply_text("لم أتمكن من فهم الصوت. حاول مرة أخرى.")
             return
 
-        # Optional: show what was heard
         await update.message.reply_text(f"🎤 سمعت: {transcript}")
 
         await context.bot.send_chat_action(chat_id=chat_id, action="typing")
         reply = await agent.run(user_id, chat_id, transcript)
 
-        # Reply with text + optional voice
         if len(reply) > 4000:
             for i in range(0, len(reply), 4000):
                 await update.message.reply_text(reply[i : i + 4000])
         else:
             await update.message.reply_text(reply)
 
-        # Generate voice reply if short enough
         if len(reply) < 500:
             await context.bot.send_chat_action(chat_id=chat_id, action="record_voice")
             mp3_path = str(TEMP_DIR / f"{user_id}_reply.mp3")
@@ -219,12 +211,11 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Describe images using Groq vision model if available, else save + note."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     caption = update.message.caption or "صف هذه الصورة"
 
-    photo = update.message.photo[-1]  # highest resolution
+    photo = update.message.photo[-1]
     file = await context.bot.get_file(photo.file_id)
 
     img_path = str(TEMP_DIR / f"{user_id}_{photo.file_id}.jpg")
@@ -233,13 +224,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
     try:
-        # Groq currently supports some vision models; use llama-3.2-90b-vision if available
-        # Fallback: just acknowledge and store path info
         with open(img_path, "rb") as f:
             import base64
             b64 = base64.b64encode(f.read()).decode()
 
-        # Try vision (may fail depending on model availability)
         try:
             response = groq_client.chat.completions.create(
                 model="llama-3.2-90b-vision-preview",
@@ -264,7 +252,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "لكن يمكنك وصف ما تريد فعله بها وسأساعدك."
             )
 
-        # Feed description into agent so it can use tools if needed
         reply = await agent.run(
             user_id,
             chat_id,
@@ -298,7 +285,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dest.parent.mkdir(parents=True, exist_ok=True)
     await file.download_to_drive(str(dest))
 
-    # If text-like, read and summarize via agent
     text_exts = {".txt", ".md", ".py", ".json", ".csv", ".log", ".html", ".xml"}
     if Path(filename).suffix.lower() in text_exts:
         content = dest.read_text(encoding="utf-8", errors="replace")[:8000]
@@ -313,8 +299,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-# ──────────────────────────── Reminders job ────────────────────────────
-
 async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(timezone.utc).isoformat()
     due = await memory.get_due_reminders(now)
@@ -328,8 +312,6 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Reminder send failed: {e}")
 
-
-# ──────────────────────────── Main ────────────────────────────
 
 def main():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -351,11 +333,9 @@ def main():
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
-    # Background reminder checker every 30 seconds
     if application.job_queue:
         application.job_queue.run_repeating(check_reminders, interval=30, first=10)
 
-    # Init DB
     async def post_init(app: Application):
         await memory.init_db()
         logger.info("Database ready")

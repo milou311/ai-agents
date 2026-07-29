@@ -1,8 +1,14 @@
 """Task, reminder and notes management tools."""
 
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 from agents import memory
 from datetime import datetime, timedelta
-from typing import Optional
 
 
 async def manage_tasks(
@@ -14,9 +20,6 @@ async def manage_tasks(
     task_id: int = None,
     status: str = None,
 ) -> str:
-    """
-    action: add | list | complete | cancel
-    """
     if action == "add":
         if not title:
             return "يجب تحديد عنوان المهمة."
@@ -56,11 +59,6 @@ async def manage_reminders(
     minutes_from_now: int = 0,
     remind_at: str = None,
 ) -> str:
-    """
-    action: add
-    minutes_from_now: عدد الدقائق من الآن
-    أو remind_at بصيغة ISO
-    """
     if action == "add":
         if not message:
             return "يجب كتابة نص التذكير."
