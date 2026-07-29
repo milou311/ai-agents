@@ -10,15 +10,15 @@ Aligned with `docs/AAOS_ARCHITECTURE_v1.md`.
 - [x] Document coding-agent rules in README
 - [x] Design-note template
 
-## Phase 1 — Modular Runtime
+## Phase 1 — Modular Runtime ✅
 
 - [x] `aaos.models` gateway (Groq + OpenAI failover, tool_use_failed recovery)
 - [x] `aaos.memory` SQLite store + legacy shim
 - [x] `aaos.tools` ToolRegistry + default built-ins
 - [x] `aaos.core.AgentLoop` wired to Gateway + Memory + Tools
-- [x] Legacy `AgentCore` → thin adapter (Telegram unbroken)
-- [ ] `aaos.interfaces.telegram` adapter using Core only
-- [ ] Move tool implementations fully under `aaos/tools/builtins` (no agents.tools dependency)
+- [x] Legacy `AgentCore` → thin adapter
+- [x] Tool implementations under `aaos/tools/builtins`
+- [x] `aaos.interfaces.telegram` adapter (production entry via `bot.py`)
 
 ## Phase 2 — Planning & Knowledge
 

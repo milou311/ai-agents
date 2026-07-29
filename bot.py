@@ -1,19 +1,19 @@
 """
-Root entry point for deployment (Render, Railway, local, etc.).
+Production entry point.
 
-Usage:
-    python bot.py
+Uses AAOS Telegram interface when available; falls back to legacy module path.
 """
 
 import sys
 from pathlib import Path
 
-# Ensure project root is on PYTHONPATH so `import agents` always works
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agents.telegram_bot import main
-
 if __name__ == "__main__":
+    try:
+        from aaos.interfaces.telegram import main
+    except Exception:
+        from agents.telegram_bot import main
     main()

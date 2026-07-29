@@ -1,1 +1,5 @@
-"""Telegram interface adapter (Phase 1 will fully own this)."""
+"""Telegram interface adapter."""
+
+from aaos.interfaces.telegram.app import main, build_application
+
+__all__ = ["main", "build_application"]

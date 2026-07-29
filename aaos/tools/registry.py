@@ -58,11 +58,17 @@ class ToolRegistry:
 
 
 def build_default_registry() -> ToolRegistry:
-    """Register built-in tools (legacy implementations via thin wrappers)."""
-    from agents.tools.web_search import web_search
-    from agents.tools.file_ops import read_file, write_file, list_files, delete_file
-    from agents.tools.http_api import call_api
-    from agents.tools.tasks_tool import manage_tasks, manage_reminders, manage_notes
+    from aaos.tools.builtins import (
+        web_search,
+        read_file,
+        write_file,
+        list_files,
+        delete_file,
+        call_api,
+        manage_tasks,
+        manage_reminders,
+        manage_notes,
+    )
 
     reg = ToolRegistry()
 
@@ -121,9 +127,7 @@ def build_default_registry() -> ToolRegistry:
         "Delete a saved file",
         {
             "type": "object",
-            "properties": {
-                "filename": {"type": "string"},
-            },
+            "properties": {"filename": {"type": "string"}},
             "required": ["filename"],
         },
     )
@@ -146,7 +150,10 @@ def build_default_registry() -> ToolRegistry:
         {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "description": "add | list | complete | cancel"},
+                "action": {
+                    "type": "string",
+                    "description": "add | list | complete | cancel",
+                },
                 "title": {"type": "string"},
                 "description": {"type": "string"},
                 "due_date": {"type": "string"},
@@ -217,7 +224,10 @@ def build_default_registry() -> ToolRegistry:
             "type": "object",
             "properties": {
                 "url": {"type": "string"},
-                "method": {"type": "string", "description": "GET, POST, or PUT"},
+                "method": {
+                    "type": "string",
+                    "description": "GET, POST, or PUT",
+                },
             },
             "required": ["url"],
         },
