@@ -1,13 +1,14 @@
 """
-Personal Assistant Telegram Bot
---------------------------------
-Version of the assistant that works on Telegram (perfect for phone use).
+Personal Assistant Telegram Bot (Groq version)
+----------------------------------------------
+Works with Groq API (free tier available).
+Perfect for phone use via Telegram.
 """
 
 import os
 import logging
 from dotenv import load_dotenv
-from openai import OpenAI
+from groq import Groq
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -19,15 +20,13 @@ from telegram.ext import (
 
 load_dotenv()
 
-# Enable logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
-# OpenAI client
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 SYSTEM_PROMPT = """أنت مساعد شخصي ذكي اسمك "مُعين".
 تتحدث بالعربية الفصحى المبسطة أو الدارجة حسب أسلوب المستخدم، وتتحدث الإنجليزية بطلاقة أيضاً.
@@ -46,7 +45,6 @@ SYSTEM_PROMPT = """أنت مساعد شخصي ذكي اسمك "مُعين".
 - ركز على مساعدة المستخدم في مهامه اليومية
 """
 
-# Store conversation history per user
 user_conversations = {}
 
 
@@ -59,7 +57,6 @@ def get_user_history(user_id: int):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send a message when the command /start is issued."""
     welcome_message = (
         "مرحباً! 👋\n\n"
         "أنا *مُعين*، مساعدك الشخصي الذكي.\n\n"
@@ -74,7 +71,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send help message."""
     help_text = (
         "*كيفية استخدام البوت:*\n\n"
         "• فقط أرسل أي رسالة وسأرد عليك\n"
@@ -85,7 +81,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Reset conversation history for the user."""
     user_id = update.effective_user.id
     user_conversations[user_id] = [
         {"role": "system", "content": SYSTEM_PROMPT}
@@ -94,7 +89,6 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle normal text messages."""
     user_id = update.effective_user.id
     user_message = update.message.text
 
@@ -102,13 +96,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history.append({"role": "user", "content": user_message})
 
     try:
-        # Send typing action
         await context.bot.send_chat_action(
             chat_id=update.effective_chat.id, action="typing"
         )
 
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
             messages=history,
             temperature=0.7,
             max_tokens=1000,
@@ -122,21 +115,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error: {e}")
         await update.message.reply_text(
-            "عذراً، حدث خطأ أثناء معالجة رسالتك. حاول مرة أخرى."
+            "عذراً، حدث خطأ أثناء معالجة رسالتك. حاول مرة أخرى لاحقاً."
         )
 
 
 def main():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
-        raise ValueError(
-            "❌ لم يتم العثور على TELEGRAM_BOT_TOKEN في ملف .env"
-        )
+        raise ValueError("❌ لم يتم العثور على TELEGRAM_BOT_TOKEN")
 
-    if not os.getenv("OPENAI_API_KEY"):
-        raise ValueError(
-            "❌ لم يتم العثور على OPENAI_API_KEY في ملف .env"
-        )
+    if not os.getenv("GROQ_API_KEY"):
+        raise ValueError("❌ لم يتم العثور على GROQ_API_KEY")
 
     application = Application.builder().token(token).build()
 
@@ -147,7 +136,7 @@ def main():
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message)
     )
 
-    print("🤖 البوت يعمل الآن...")
+    print("🤖 البوت يعمل الآن على Groq...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
