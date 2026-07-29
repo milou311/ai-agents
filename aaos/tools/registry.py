@@ -1,22 +1,30 @@
 """
-Tool Manager — register, list OpenAI-compatible specs, invoke by name.
+Tool Manager — register, list specs, invoke with permission checks + audit.
 """
 
 from __future__ import annotations
 
 import inspect
 import logging
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
+from aaos.security import (
+    DEFAULT_USER_PERMISSIONS,
+    audit,
+    check_tool_permission,
+)
 from aaos.tools.base import ToolResult
 
 logger = logging.getLogger(__name__)
 
 
 class ToolRegistry:
-    def __init__(self):
+    def __init__(self, default_permissions: Iterable[str] | None = None):
         self._handlers: dict[str, Callable] = {}
         self._specs: dict[str, dict[str, Any]] = {}
+        self.default_permissions = set(
+            default_permissions or DEFAULT_USER_PERMISSIONS
+        )
 
     def register(
         self,
@@ -45,15 +53,31 @@ class ToolRegistry:
         handler = self._handlers.get(name)
         if not handler:
             return f"أداة غير معروفة: {name}"
+
+        granted = set(ctx.get("permissions") or self.default_permissions)
+        if not check_tool_permission(name, granted):
+            audit("tool_denied", tool=name, user_id=ctx.get("user_id"))
+            return f"رفض الصلاحية: لا يمكن تنفيذ {name}"
+
         try:
             result = handler(args, ctx)
             if inspect.isawaitable(result):
                 result = await result
             if isinstance(result, ToolResult):
-                return result.data if result.ok else (result.error or result.data)
-            return str(result)
+                out = result.data if result.ok else (result.error or result.data)
+            else:
+                out = str(result)
+            audit(
+                "tool_run",
+                tool=name,
+                user_id=ctx.get("user_id"),
+                ok=True,
+                args_keys=list(args.keys()),
+            )
+            return out
         except Exception as e:
             logger.exception("Tool %s failed", name)
+            audit("tool_error", tool=name, user_id=ctx.get("user_id"), error=str(e))
             return f"خطأ أثناء تنفيذ الأداة: {e}"
 
 
@@ -236,7 +260,9 @@ def build_default_registry() -> ToolRegistry:
 
     async def _knowledge_search(args, ctx):
         ks = get_knowledge_store()
-        return await ks.search_as_text(args.get("query", ""), limit=int(args.get("limit", 5)))
+        return await ks.search_as_text(
+            args.get("query", ""), limit=int(args.get("limit", 5))
+        )
 
     async def _knowledge_ingest(args, ctx):
         ks = get_knowledge_store()
