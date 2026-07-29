@@ -1,7 +1,7 @@
 """
-Agent core with tool-calling loop (multi-step automatic execution).
-Primary: Groq models with automatic fallback.
-Final fallback: OpenAI (if OPENAI_API_KEY is set).
+Agent core with tool-calling loop.
+Primary: Groq (with robust tool_use_failed handling).
+Final fallback: OpenAI if OPENAI_API_KEY is set.
 """
 
 import sys
@@ -14,6 +14,7 @@ if str(_ROOT) not in sys.path:
 import json
 import logging
 import os
+import re
 import time
 
 from groq import Groq, RateLimitError, APIStatusError
@@ -26,44 +27,45 @@ from agents import memory
 
 logger = logging.getLogger(__name__)
 
-# Groq models (tried in order)
+# Models that support tool calling reliably on Groq
 GROQ_MODELS = [
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
-    "gemma2-9b-it",
 ]
 
-# OpenAI fallback model
 OPENAI_MODEL = "gpt-4o-mini"
 
 SYSTEM_PROMPT = """أنت مساعد شخصي ذكي اسمه "مُعين".
 نتحدث بالعربية المبسطة أو الدارجة حسب المستخدم، وبالإنجليزية بطلاقة.
 
-قدراتك (استخدم الأدوات عند الحاجة):
-- البحث على الإنترنت
+قدراتك (استخدم الأدوات عند الحاجة فقط):
+- البحث على الإنترنت للمعلومات الحديثة
 - قراءة/كتابة الملفات
-- المهام والتذكيرات والملاحظات
+- المهام والتذكيرات والملاحظات الدائمة
 - استدعاء APIs
-- تنفيذ عدة خطوات تلقائياً
 
-قواعد:
+قواعد مهمة:
 - كن مختصراً وواضحاً.
 - لا تختلق معلومات.
-- استخدم الأدوات بدل التخمين.
+- إذا لم تجد معلومة في الذاكرة أو الأدوات، قل ذلك بصراحة.
+- أجب مباشرة على الأسئلة العامة دون أدوات إذا لم تكن بحاجة لبحث أو حفظ.
 - لا تذكر أسماء الأدوات التقنية إلا إذا سُئلت.
 """
 
+# Schemas kept simple for better Groq compatibility
 TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "البحث على الإنترنت",
+            "description": "Search the internet for current information",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string"},
-                    "max_results": {"type": "integer"},
+                    "query": {
+                        "type": "string",
+                        "description": "Search query",
+                    },
                 },
                 "required": ["query"],
             },
@@ -73,10 +75,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "قراءة ملف محفوظ",
+            "description": "Read a saved user file",
             "parameters": {
                 "type": "object",
-                "properties": {"filename": {"type": "string"}},
+                "properties": {
+                    "filename": {"type": "string", "description": "File name"},
+                },
                 "required": ["filename"],
             },
         },
@@ -85,12 +89,12 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "حفظ محتوى في ملف",
+            "description": "Save content to a file",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "filename": {"type": "string"},
-                    "content": {"type": "string"},
+                    "filename": {"type": "string", "description": "File name"},
+                    "content": {"type": "string", "description": "File content"},
                 },
                 "required": ["filename", "content"],
             },
@@ -100,18 +104,23 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "عرض الملفات المحفوظة",
-            "parameters": {"type": "object", "properties": {}},
+            "description": "List saved files for the user",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
         },
     },
     {
         "type": "function",
         "function": {
             "name": "delete_file",
-            "description": "حذف ملف",
+            "description": "Delete a saved file",
             "parameters": {
                 "type": "object",
-                "properties": {"filename": {"type": "string"}},
+                "properties": {
+                    "filename": {"type": "string", "description": "File name"},
+                },
                 "required": ["filename"],
             },
         },
@@ -120,19 +129,18 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "manage_tasks",
-            "description": "إدارة المهام: add|list|complete|cancel",
+            "description": "Manage tasks. action must be one of: add, list, complete, cancel",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["add", "list", "complete", "cancel"],
+                        "description": "add | list | complete | cancel",
                     },
-                    "title": {"type": "string"},
-                    "description": {"type": "string"},
-                    "due_date": {"type": "string"},
-                    "task_id": {"type": "integer"},
-                    "status": {"type": "string"},
+                    "title": {"type": "string", "description": "Task title (for add)"},
+                    "description": {"type": "string", "description": "Task details"},
+                    "due_date": {"type": "string", "description": "Optional due date"},
+                    "task_id": {"type": "integer", "description": "Task id (for complete/cancel)"},
                 },
                 "required": ["action"],
             },
@@ -142,14 +150,16 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "manage_reminders",
-            "description": "ضبط تذكير",
+            "description": "Set a reminder. action must be add",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["add"]},
-                    "message": {"type": "string"},
-                    "minutes_from_now": {"type": "integer"},
-                    "remind_at": {"type": "string"},
+                    "action": {"type": "string", "description": "Must be: add"},
+                    "message": {"type": "string", "description": "Reminder text"},
+                    "minutes_from_now": {
+                        "type": "integer",
+                        "description": "Minutes from now",
+                    },
                 },
                 "required": ["action", "message"],
             },
@@ -159,13 +169,16 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "manage_notes",
-            "description": "ملاحظات دائمة: set|get|list",
+            "description": "Permanent notes. action must be one of: set, get, list",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["set", "get", "list"]},
-                    "key": {"type": "string"},
-                    "value": {"type": "string"},
+                    "action": {
+                        "type": "string",
+                        "description": "set | get | list",
+                    },
+                    "key": {"type": "string", "description": "Note key"},
+                    "value": {"type": "string", "description": "Note value (for set)"},
                 },
                 "required": ["action"],
             },
@@ -175,14 +188,15 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "call_api",
-            "description": "استدعاء HTTP API",
+            "description": "Call an external HTTP API",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string"},
-                    "method": {"type": "string", "enum": ["GET", "POST", "PUT"]},
-                    "headers": {"type": "object"},
-                    "body": {"type": "object"},
+                    "url": {"type": "string", "description": "Full URL"},
+                    "method": {
+                        "type": "string",
+                        "description": "GET, POST, or PUT",
+                    },
                 },
                 "required": ["url"],
             },
@@ -196,6 +210,57 @@ RATE_LIMIT_MSG = (
 )
 
 
+def _is_rate_limit(e: Exception) -> bool:
+    if isinstance(e, RateLimitError):
+        return True
+    if getattr(e, "status_code", None) == 429:
+        return True
+    if "RateLimit" in type(e).__name__:
+        return True
+    return False
+
+
+def _is_tool_use_failed(e: Exception) -> bool:
+    """Groq returns 400 with tool_use_failed when model emits bad tool XML."""
+    status = getattr(e, "status_code", None)
+    if status != 400:
+        return False
+    text = str(e).lower()
+    return "tool_use_failed" in text or "failed to call a function" in text
+
+
+def _parse_xml_tool_call(text: str):
+    """
+    Parse Groq-style failed generation like:
+    <function=manage_notes{"action":"get","key":"x"}</function>
+    Returns (name, args_dict) or None.
+    """
+    if not text:
+        return None
+    m = re.search(
+        r"<function[=\s]*([a-zA-Z0-9_]+)\s*(\{.*?")\s*</function>",
+        text,
+        re.DOTALL,
+    )
+    if not m:
+        # alternate form: <function=name>{...}</function>
+        m = re.search(
+            r"<function[=\s]*([a-zA-Z0-9_]+)\s*>\s*(\{.*?\})\s*</function>",
+            text,
+            re.DOTALL,
+        )
+    if not m:
+        m = re.search(r"<function=([a-zA-Z0-9_]+)\s*(\{[^<]*\})", text, re.DOTALL)
+    if not m:
+        return None
+    name = m.group(1).strip()
+    try:
+        args = json.loads(m.group(2))
+    except json.JSONDecodeError:
+        args = {}
+    return name, args
+
+
 class AgentCore:
     def __init__(self):
         self.groq = Groq(api_key=os.getenv("GROQ_API_KEY"))
@@ -204,58 +269,97 @@ class AgentCore:
         if openai_key:
             try:
                 from openai import OpenAI
+
                 self.openai = OpenAI(api_key=openai_key)
                 logger.info("OpenAI fallback enabled")
             except Exception as e:
                 logger.warning("OpenAI init failed: %s", e)
         self.max_tool_rounds = 5
 
-    def _chat_with_fallback(self, **kwargs):
+    def _chat(self, *, use_tools: bool, model: str, provider: str, **kwargs):
+        call_kwargs = dict(kwargs)
+        if use_tools:
+            call_kwargs["tools"] = TOOLS
+            call_kwargs["tool_choice"] = "auto"
+        else:
+            call_kwargs.pop("tools", None)
+            call_kwargs.pop("tool_choice", None)
+
+        if provider == "groq":
+            return self.groq.chat.completions.create(model=model, **call_kwargs)
+        if provider == "openai" and self.openai is not None:
+            return self.openai.chat.completions.create(model=model, **call_kwargs)
+        raise RuntimeError(f"Unknown provider: {provider}")
+
+    def _chat_with_fallback(self, messages, use_tools=True, **kwargs):
         """
-        1) Try all Groq models
-        2) If all rate-limited → try OpenAI (if key present)
-        3) Otherwise raise last error
+        Try Groq models, then OpenAI.
+        On tool_use_failed: retry same model without tools, or parse XML tool call.
         """
         last_error = None
-
-        # --- Groq models ---
-        for model in GROQ_MODELS:
-            try:
-                return self.groq.chat.completions.create(model=model, **kwargs)
-            except RateLimitError as e:
-                logger.warning("Rate limit on Groq/%s", model)
-                last_error = e
-                time.sleep(0.3)
-                continue
-            except APIStatusError as e:
-                if e.status_code == 429:
-                    logger.warning("429 on Groq/%s", model)
-                    last_error = e
-                    time.sleep(0.3)
-                    continue
-                raise
-
-        # --- OpenAI fallback ---
+        providers = [(m, "groq") for m in GROQ_MODELS]
         if self.openai is not None:
+            providers.append((OPENAI_MODEL, "openai"))
+
+        for model, provider in providers:
             try:
-                logger.info("Falling back to OpenAI %s", OPENAI_MODEL)
-                return self.openai.chat.completions.create(
-                    model=OPENAI_MODEL,
+                return self._chat(
+                    use_tools=use_tools,
+                    model=model,
+                    provider=provider,
+                    messages=messages,
+                    temperature=0.5,
+                    max_tokens=1024,
                     **kwargs,
                 )
             except Exception as e:
-                # OpenAI also has RateLimitError in openai package
-                err_name = type(e).__name__
-                if "RateLimit" in err_name or getattr(e, "status_code", None) == 429:
-                    logger.warning("OpenAI also rate-limited: %s", e)
+                if _is_rate_limit(e):
+                    logger.warning("Rate limit on %s/%s", provider, model)
                     last_error = e
-                else:
-                    logger.exception("OpenAI fallback error")
-                    last_error = e
+                    time.sleep(0.3)
+                    continue
 
-        raise last_error or RateLimitError(
-            "All providers rate-limited", response=None, body=None
-        )
+                if use_tools and _is_tool_use_failed(e):
+                    logger.warning(
+                        "tool_use_failed on %s/%s — retrying without tools",
+                        provider,
+                        model,
+                    )
+                    # Try to recover XML tool call from error body
+                    recovered = _parse_xml_tool_call(str(e))
+                    if recovered:
+                        name, args = recovered
+                        logger.info("Recovered XML tool call: %s %s", name, args)
+                        # Return a synthetic-like structure via a simple namespace object
+                        return _SyntheticToolResponse(name, args)
+
+                    try:
+                        return self._chat(
+                            use_tools=False,
+                            model=model,
+                            provider=provider,
+                            messages=messages,
+                            temperature=0.5,
+                            max_tokens=1024,
+                        )
+                    except Exception as e2:
+                        if _is_rate_limit(e2):
+                            last_error = e2
+                            continue
+                        last_error = e2
+                        continue
+
+                # Other 400s / errors — try next model
+                status = getattr(e, "status_code", None)
+                if status and 400 <= status < 500 and status != 401:
+                    logger.warning("Client error %s on %s/%s: %s", status, provider, model, e)
+                    last_error = e
+                    continue
+                raise
+
+        if last_error and _is_rate_limit(last_error):
+            raise last_error
+        raise last_error or RuntimeError("All providers failed")
 
     async def _execute_tool(self, name: str, args: dict, user_id: int, chat_id: int) -> str:
         try:
@@ -264,7 +368,9 @@ class AgentCore:
             elif name == "read_file":
                 return read_file(user_id, args.get("filename", ""))
             elif name == "write_file":
-                return write_file(user_id, args.get("filename", ""), args.get("content", ""))
+                return write_file(
+                    user_id, args.get("filename", ""), args.get("content", "")
+                )
             elif name == "list_files":
                 return list_files(user_id)
             elif name == "delete_file":
@@ -326,31 +432,44 @@ class AgentCore:
         await memory.add_message(user_id, "user", user_message)
 
         try:
-            for _ in range(self.max_tool_rounds):
+            for round_i in range(self.max_tool_rounds):
                 try:
-                    response = self._chat_with_fallback(
-                        messages=messages,
-                        tools=TOOLS,
-                        tool_choice="auto",
-                        temperature=0.6,
-                        max_tokens=1024,
-                    )
-                except (RateLimitError, APIStatusError) as e:
-                    if isinstance(e, RateLimitError) or getattr(e, "status_code", None) == 429:
-                        await memory.add_message(user_id, "assistant", RATE_LIMIT_MSG)
-                        return RATE_LIMIT_MSG
-                    raise
+                    response = self._chat_with_fallback(messages, use_tools=True)
                 except Exception as e:
-                    # Catch OpenAI rate limit / other provider errors
-                    if "RateLimit" in type(e).__name__ or getattr(e, "status_code", None) == 429:
+                    if _is_rate_limit(e):
                         await memory.add_message(user_id, "assistant", RATE_LIMIT_MSG)
                         return RATE_LIMIT_MSG
-                    raise
+                    logger.exception("Chat error")
+                    return f"عذراً، حدث خطأ في الخدمة. حاول مرة أخرى."
+
+                # Synthetic recovery from XML tool call
+                if isinstance(response, _SyntheticToolResponse):
+                    result = await self._execute_tool(
+                        response.name, response.args, user_id, chat_id
+                    )
+                    if len(result) > 2000:
+                        result = result[:2000] + "\n...(مقطوع)"
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": f"(استدعاء أداة: {response.name})",
+                        }
+                    )
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": f"نتيجة الأداة {response.name}:\n{result}\n\nأجب على المستخدم بناءً على هذه النتيجة.",
+                        }
+                    )
+                    continue
 
                 msg = response.choices[0].message
+                tool_calls = getattr(msg, "tool_calls", None)
 
-                if not getattr(msg, "tool_calls", None):
-                    reply = msg.content or ""
+                if not tool_calls:
+                    reply = (msg.content or "").strip()
+                    if not reply:
+                        reply = "لم أتمكن من إنشاء رد. حاول صياغة السؤال differently."
                     await memory.add_message(user_id, "assistant", reply)
                     return reply
 
@@ -367,12 +486,12 @@ class AgentCore:
                                     "arguments": tc.function.arguments,
                                 },
                             }
-                            for tc in msg.tool_calls
+                            for tc in tool_calls
                         ],
                     }
                 )
 
-                for tc in msg.tool_calls:
+                for tc in tool_calls:
                     name = tc.function.name
                     try:
                         args = json.loads(tc.function.arguments or "{}")
@@ -393,15 +512,17 @@ class AgentCore:
             await memory.add_message(user_id, "assistant", final)
             return final
 
-        except (RateLimitError, APIStatusError) as e:
-            if isinstance(e, RateLimitError) or getattr(e, "status_code", None) == 429:
-                await memory.add_message(user_id, "assistant", RATE_LIMIT_MSG)
-                return RATE_LIMIT_MSG
-            logger.exception("API error")
-            return f"عذراً، حدث خطأ في الخدمة: {e}"
         except Exception as e:
-            if "RateLimit" in type(e).__name__:
+            if _is_rate_limit(e):
                 await memory.add_message(user_id, "assistant", RATE_LIMIT_MSG)
                 return RATE_LIMIT_MSG
             logger.exception("Agent run error")
-            return f"عذراً، حدث خطأ: {e}"
+            return "عذراً، حدث خطأ غير متوقع. حاول مرة أخرى."
+
+
+class _SyntheticToolResponse:
+    """Minimal object when we recover a tool call from Groq XML error text."""
+
+    def __init__(self, name: str, args: dict):
+        self.name = name
+        self.args = args or {}
