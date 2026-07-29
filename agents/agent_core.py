@@ -27,7 +27,6 @@ from agents import memory
 
 logger = logging.getLogger(__name__)
 
-# Models that support tool calling reliably on Groq
 GROQ_MODELS = [
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
@@ -52,7 +51,6 @@ SYSTEM_PROMPT = """أنت مساعد شخصي ذكي اسمه "مُعين".
 - لا تذكر أسماء الأدوات التقنية إلا إذا سُئلت.
 """
 
-# Schemas kept simple for better Groq compatibility
 TOOLS = [
     {
         "type": "function",
@@ -62,10 +60,7 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query",
-                    },
+                    "query": {"type": "string", "description": "Search query"},
                 },
                 "required": ["query"],
             },
@@ -105,10 +100,7 @@ TOOLS = [
         "function": {
             "name": "list_files",
             "description": "List saved files for the user",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            },
+            "parameters": {"type": "object", "properties": {}},
         },
     },
     {
@@ -140,7 +132,10 @@ TOOLS = [
                     "title": {"type": "string", "description": "Task title (for add)"},
                     "description": {"type": "string", "description": "Task details"},
                     "due_date": {"type": "string", "description": "Optional due date"},
-                    "task_id": {"type": "integer", "description": "Task id (for complete/cancel)"},
+                    "task_id": {
+                        "type": "integer",
+                        "description": "Task id (for complete/cancel)",
+                    },
                 },
                 "required": ["action"],
             },
@@ -178,7 +173,10 @@ TOOLS = [
                         "description": "set | get | list",
                     },
                     "key": {"type": "string", "description": "Note key"},
-                    "value": {"type": "string", "description": "Note value (for set)"},
+                    "value": {
+                        "type": "string",
+                        "description": "Note value (for set)",
+                    },
                 },
                 "required": ["action"],
             },
@@ -221,7 +219,6 @@ def _is_rate_limit(e: Exception) -> bool:
 
 
 def _is_tool_use_failed(e: Exception) -> bool:
-    """Groq returns 400 with tool_use_failed when model emits bad tool XML."""
     status = getattr(e, "status_code", None)
     if status != 400:
         return False
@@ -231,34 +228,33 @@ def _is_tool_use_failed(e: Exception) -> bool:
 
 def _parse_xml_tool_call(text: str):
     """
-    Parse Groq-style failed generation like:
-    <function=manage_notes{"action":"get","key":"x"}</function>
-    Returns (name, args_dict) or None.
+    Recover tool calls from Groq failed_generation text, e.g.:
+    <function=manage_notes{"action":"get","key":"units_in_system"}</function>
     """
     if not text:
         return None
-    m = re.search(
-        r"<function[=\s]*([a-zA-Z0-9_]+)\s*(\{.*?")\s*</function>",
-        text,
-        re.DOTALL,
-    )
-    if not m:
-        # alternate form: <function=name>{...}</function>
-        m = re.search(
-            r"<function[=\s]*([a-zA-Z0-9_]+)\s*>\s*(\{.*?\})\s*</function>",
-            text,
-            re.DOTALL,
-        )
-    if not m:
-        m = re.search(r"<function=([a-zA-Z0-9_]+)\s*(\{[^<]*\})", text, re.DOTALL)
-    if not m:
-        return None
-    name = m.group(1).strip()
-    try:
-        args = json.loads(m.group(2))
-    except json.JSONDecodeError:
-        args = {}
-    return name, args
+
+    patterns = [
+        r"<function=([a-zA-Z0-9_]+)\s*(\{.*?\})\s*</function>",
+        r"<function=([a-zA-Z0-9_]+)>\s*(\{.*?\})\s*</function>",
+        r"<function=([a-zA-Z0-9_]+)\s*(\{[^<]*\})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.DOTALL)
+        if m:
+            name = m.group(1).strip()
+            try:
+                args = json.loads(m.group(2))
+            except json.JSONDecodeError:
+                args = {}
+            return name, args
+    return None
+
+
+class _SyntheticToolResponse:
+    def __init__(self, name: str, args: dict):
+        self.name = name
+        self.args = args or {}
 
 
 class AgentCore:
@@ -276,14 +272,16 @@ class AgentCore:
                 logger.warning("OpenAI init failed: %s", e)
         self.max_tool_rounds = 5
 
-    def _chat(self, *, use_tools: bool, model: str, provider: str, **kwargs):
-        call_kwargs = dict(kwargs)
+    def _chat(self, *, use_tools: bool, model: str, provider: str, messages, **kwargs):
+        call_kwargs = {
+            "messages": messages,
+            "temperature": 0.5,
+            "max_tokens": 1024,
+        }
+        call_kwargs.update(kwargs)
         if use_tools:
             call_kwargs["tools"] = TOOLS
             call_kwargs["tool_choice"] = "auto"
-        else:
-            call_kwargs.pop("tools", None)
-            call_kwargs.pop("tool_choice", None)
 
         if provider == "groq":
             return self.groq.chat.completions.create(model=model, **call_kwargs)
@@ -291,11 +289,7 @@ class AgentCore:
             return self.openai.chat.completions.create(model=model, **call_kwargs)
         raise RuntimeError(f"Unknown provider: {provider}")
 
-    def _chat_with_fallback(self, messages, use_tools=True, **kwargs):
-        """
-        Try Groq models, then OpenAI.
-        On tool_use_failed: retry same model without tools, or parse XML tool call.
-        """
+    def _chat_with_fallback(self, messages, use_tools=True):
         last_error = None
         providers = [(m, "groq") for m in GROQ_MODELS]
         if self.openai is not None:
@@ -308,9 +302,6 @@ class AgentCore:
                     model=model,
                     provider=provider,
                     messages=messages,
-                    temperature=0.5,
-                    max_tokens=1024,
-                    **kwargs,
                 )
             except Exception as e:
                 if _is_rate_limit(e):
@@ -321,38 +312,33 @@ class AgentCore:
 
                 if use_tools and _is_tool_use_failed(e):
                     logger.warning(
-                        "tool_use_failed on %s/%s — retrying without tools",
-                        provider,
-                        model,
+                        "tool_use_failed on %s/%s", provider, model
                     )
-                    # Try to recover XML tool call from error body
                     recovered = _parse_xml_tool_call(str(e))
                     if recovered:
                         name, args = recovered
                         logger.info("Recovered XML tool call: %s %s", name, args)
-                        # Return a synthetic-like structure via a simple namespace object
                         return _SyntheticToolResponse(name, args)
 
+                    # Retry same model without tools (plain answer)
                     try:
                         return self._chat(
                             use_tools=False,
                             model=model,
                             provider=provider,
                             messages=messages,
-                            temperature=0.5,
-                            max_tokens=1024,
                         )
                     except Exception as e2:
-                        if _is_rate_limit(e2):
-                            last_error = e2
-                            continue
                         last_error = e2
+                        if _is_rate_limit(e2):
+                            continue
                         continue
 
-                # Other 400s / errors — try next model
                 status = getattr(e, "status_code", None)
                 if status and 400 <= status < 500 and status != 401:
-                    logger.warning("Client error %s on %s/%s: %s", status, provider, model, e)
+                    logger.warning(
+                        "Client error %s on %s/%s: %s", status, provider, model, e
+                    )
                     last_error = e
                     continue
                 raise
@@ -432,7 +418,7 @@ class AgentCore:
         await memory.add_message(user_id, "user", user_message)
 
         try:
-            for round_i in range(self.max_tool_rounds):
+            for _ in range(self.max_tool_rounds):
                 try:
                     response = self._chat_with_fallback(messages, use_tools=True)
                 except Exception as e:
@@ -440,9 +426,9 @@ class AgentCore:
                         await memory.add_message(user_id, "assistant", RATE_LIMIT_MSG)
                         return RATE_LIMIT_MSG
                     logger.exception("Chat error")
-                    return f"عذراً، حدث خطأ في الخدمة. حاول مرة أخرى."
+                    return "عذراً، حدث خطأ في الخدمة. حاول مرة أخرى."
 
-                # Synthetic recovery from XML tool call
+                # Recovered from Groq XML tool_use_failed
                 if isinstance(response, _SyntheticToolResponse):
                     result = await self._execute_tool(
                         response.name, response.args, user_id, chat_id
@@ -452,13 +438,16 @@ class AgentCore:
                     messages.append(
                         {
                             "role": "assistant",
-                            "content": f"(استدعاء أداة: {response.name})",
+                            "content": f"(tool: {response.name})",
                         }
                     )
                     messages.append(
                         {
                             "role": "user",
-                            "content": f"نتيجة الأداة {response.name}:\n{result}\n\nأجب على المستخدم بناءً على هذه النتيجة.",
+                            "content": (
+                                f"نتيجة الأداة {response.name}:\n{result}\n\n"
+                                "أجب على المستخدم بناءً على هذه النتيجة فقط."
+                            ),
                         }
                     )
                     continue
@@ -469,7 +458,7 @@ class AgentCore:
                 if not tool_calls:
                     reply = (msg.content or "").strip()
                     if not reply:
-                        reply = "لم أتمكن من إنشاء رد. حاول صياغة السؤال differently."
+                        reply = "لم أتمكن من إنشاء رد. حاول إعادة صياغة السؤال."
                     await memory.add_message(user_id, "assistant", reply)
                     return reply
 
@@ -518,11 +507,3 @@ class AgentCore:
                 return RATE_LIMIT_MSG
             logger.exception("Agent run error")
             return "عذراً، حدث خطأ غير متوقع. حاول مرة أخرى."
-
-
-class _SyntheticToolResponse:
-    """Minimal object when we recover a tool call from Groq XML error text."""
-
-    def __init__(self, name: str, args: dict):
-        self.name = name
-        self.args = args or {}
