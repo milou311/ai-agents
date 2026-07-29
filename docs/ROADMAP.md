@@ -14,10 +14,11 @@ Aligned with `docs/AAOS_ARCHITECTURE_v1.md`.
 
 - [x] `aaos.models` gateway (Groq + OpenAI failover, tool_use_failed recovery)
 - [x] `aaos.memory` SQLite store + legacy shim
-- [ ] `aaos.tools` registry + migrate existing tools
-- [ ] Wire `AgentCore` / Orchestrator to ModelGateway
+- [x] `aaos.tools` ToolRegistry + default built-ins
+- [x] `aaos.core.AgentLoop` wired to Gateway + Memory + Tools
+- [x] Legacy `AgentCore` → thin adapter (Telegram unbroken)
 - [ ] `aaos.interfaces.telegram` adapter using Core only
-- [ ] Unit/contract tests expanded for Core and Tools
+- [ ] Move tool implementations fully under `aaos/tools/builtins` (no agents.tools dependency)
 
 ## Phase 2 — Planning & Knowledge
 
