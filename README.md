@@ -1,101 +1,129 @@
 <div align="center">
 
-# 🤖 AI Agents
+# 🤖 AI Agents — مُعين
 
-**Building Intelligent Agents for Modern Platforms**
+**وكيل ذكاء اصطناعي متقدم عبر بوت تليجرام**
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Active-success.svg)]()
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)]()
+[![Status](https://img.shields.io/badge/Status-Active-success.svg)]()
 
 </div>
 
 ---
 
-### 📌 Overview
+### 📌 نظرة عامة
 
-This repository contains practical AI Agents that you can run and use.
+**مُعين** هو مساعد شخصي ذكي يعمل عبر تليجرام ويدعم:
 
-Currently available:
-
-### ✅ Personal Assistant Agent (`مُعين`)
-
-A smart personal assistant that:
-- Speaks **Arabic** and **English**
-- Helps with daily tasks, organizing thoughts, and summarization
-- Supports interactive **chat** interface
-- Prepared for future **voice messages** support
+| الميزة | الحالة |
+|--------|--------|
+| الدردشة النصية (عربي + إنجليزي) | ✅ |
+| ذاكرة محادثة دائمة (SQLite) | ✅ |
+| البحث على الإنترنت | ✅ |
+| قراءة وكتابة الملفات | ✅ |
+| المهام والتذكيرات | ✅ |
+| ملاحظات دائمة | ✅ |
+| استدعاء APIs خارجية | ✅ |
+| تنفيذ مهام متعددة تلقائياً (Tool loop) | ✅ |
+| الرسائل الصوتية (STT + TTS) | ✅ |
+| الصور والمستندات | ✅ |
 
 ---
 
-### 🚀 How to Run the Personal Assistant
+### 🚀 التثبيت والتشغيل
 
 ```bash
-# 1. Clone the repository
 git clone https://github.com/milou311/ai-agents.git
 cd ai-agents
 
-# 2. Create virtual environment
 python -m venv venv
-
-# Activate it
-# On Windows:
+# Windows:
 venv\Scripts\activate
-# On Mac/Linux:
+# Linux/Mac:
 source venv/bin/activate
 
-# 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Create .env file and add your OpenAI API key
-echo OPENAI_API_KEY=sk-your-key-here > .env
+# أنشئ ملف .env
+cp .env.example .env
+# ثم عدّل القيم:
+# TELEGRAM_BOT_TOKEN=...
+# GROQ_API_KEY=...
+```
 
-# 5. Run the assistant
+**تشغيل البوت:**
+
+```bash
+python -m agents.telegram_bot
+```
+
+**الواجهة النصية المحلية (اختيارية):**
+
+```bash
 python main.py
 ```
 
 ---
 
-### 💬 How to use
+### 🔑 الحصول على المفاتيح
 
-After running `python main.py`:
+1. **Telegram Bot Token**  
+   تحدث مع [@BotFather](https://t.me/BotFather) → `/newbot`
 
-- Write your message in Arabic or English
-- Type `/reset` to clear conversation history
-- Type `/exit` to quit
+2. **Groq API Key** (مجاني)  
+   https://console.groq.com → API Keys
 
 ---
 
-### 🗂️ Current Project Structure
+### 💬 أمثلة على الاستخدام
+
+- «ابحث عن آخر أخبار الذكاء الاصطناعي»
+- «أضف مهمة: مراجعة التقرير يوم الجمعة»
+- «ذكّرني بعد 45 دقيقة بالاتصال بأحمد»
+- «احفظ ملاحظة: أفضل القهوة بدون سكر»
+- «اكتب ملخصاً واحفظه في ملف summary.md»
+- أرسل رسالة صوتية → يرد نصاً + صوتاً
+- أرسل صورة → يصفها ويساعدك
+
+---
+
+### 🗂️ هيكل المشروع
 
 ```text
 ai-agents/
 ├── agents/
-│   ├── personal_assistant.py   # Main assistant logic
-│   ├── voice_interface.py      # Voice support (coming soon)
-│   └── __init__.py
-├── main.py                     # Entry point
+│   ├── telegram_bot.py      # بوت تليجرام الرئيسي
+│   ├── agent_core.py        # نواة الوكيل + tool calling
+│   ├── memory.py            # SQLite (محادثات، مهام، تذكيرات)
+│   ├── personal_assistant.py
+│   ├── voice_interface.py
+│   └── tools/
+│       ├── web_search.py
+│       ├── file_ops.py
+│       ├── tasks_tool.py
+│       └── http_api.py
+├── data/                    # يُنشأ تلقائياً (ذاكرة + ملفات المستخدمين)
+├── main.py
 ├── requirements.txt
-├── .gitignore
+├── .env.example
 └── README.md
 ```
 
 ---
 
-### 🛠️ Roadmap
+### 🛠️ ملاحظات تقنية
 
-| Feature                        | Status          |
-|--------------------------------|-----------------|
-| Text Chat Interface            | ✅ Ready        |
-| Arabic + English support       | ✅ Ready        |
-| Conversation memory            | ✅ Ready        |
-| Voice messages (STT + TTS)     | 🚧 In progress  |
-| Tool calling (search, etc.)    | ⏳ Planned      |
-| Multi-agent collaboration      | ⏳ Planned      |
+- **النموذج:** `llama-3.3-70b-versatile` عبر Groq (يدعم Tool Calling)
+- **التعرف على الصوت:** Groq Whisper `whisper-large-v3`
+- **تحويل النص لصوت:** `edge-tts` (صوت عربي `ar-SA-HamedNeural`)
+- **البحث:** DuckDuckGo (بدون مفتاح)
+- **الذاكرة:** SQLite محلي في `data/memory.db`
+- **الملفات:** معزولة لكل مستخدم في `data/files/<user_id>/`
 
 ---
 
-### 📄 License
+### 📄 الرخصة
 
 MIT License
 
