@@ -1,34 +1,22 @@
-# Byte-compiled / cache
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-
-# Virtual environments
-venv/
+# Environment
 .env
-.env.*
+venv/
 .venv/
+__pycache__/
+*.pyc
+*.pyo
 
-# IDE
-.vscode/
-.idea/
-*.swp
+# Data (user files, memory DB)
+data/
 
-# OS
+# Temp / OS
+*.ogg
+*.mp3
+*.jpg
 .DS_Store
 Thumbs.db
 
-# Logs & local data
-*.log
-logs/
-data/
-memory/
-
-# Audio files (temporary)
-*.wav
-*.mp3
-*.ogg
-
-# Model cache
-.cache/
+# IDE
+.idea/
+.vscode/
+*.swp
