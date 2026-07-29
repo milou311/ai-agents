@@ -1,7 +1,7 @@
 """
 Agent core with tool-calling loop (multi-step automatic execution).
-Uses Groq + Llama models that support tools.
-Handles rate limits (429) with fallback models and clear user messages.
+Primary: Groq models with automatic fallback.
+Final fallback: OpenAI (if OPENAI_API_KEY is set).
 """
 
 import sys
@@ -26,15 +26,18 @@ from agents import memory
 
 logger = logging.getLogger(__name__)
 
-# Primary + fallback models (all free-tier friendly on Groq)
-MODELS = [
+# Groq models (tried in order)
+GROQ_MODELS = [
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
     "gemma2-9b-it",
 ]
 
+# OpenAI fallback model
+OPENAI_MODEL = "gpt-4o-mini"
+
 SYSTEM_PROMPT = """أنت مساعد شخصي ذكي اسمه "مُعين".
-تتحدث بالعربية المبسطة أو الدارجة حسب المستخدم، وبالإنجليزية بطلاقة.
+نتحدث بالعربية المبسطة أو الدارجة حسب المستخدم، وبالإنجليزية بطلاقة.
 
 قدراتك (استخدم الأدوات عند الحاجة):
 - البحث على الإنترنت
@@ -195,29 +198,64 @@ RATE_LIMIT_MSG = (
 
 class AgentCore:
     def __init__(self):
-        self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-        self.models = MODELS
-        self.max_tool_rounds = 5  # fewer rounds = fewer tokens
+        self.groq = Groq(api_key=os.getenv("GROQ_API_KEY"))
+        self.openai = None
+        openai_key = os.getenv("OPENAI_API_KEY")
+        if openai_key:
+            try:
+                from openai import OpenAI
+                self.openai = OpenAI(api_key=openai_key)
+                logger.info("OpenAI fallback enabled")
+            except Exception as e:
+                logger.warning("OpenAI init failed: %s", e)
+        self.max_tool_rounds = 5
 
     def _chat_with_fallback(self, **kwargs):
-        """Try models in order; on 429 switch to next model."""
+        """
+        1) Try all Groq models
+        2) If all rate-limited → try OpenAI (if key present)
+        3) Otherwise raise last error
+        """
         last_error = None
-        for model in self.models:
+
+        # --- Groq models ---
+        for model in GROQ_MODELS:
             try:
-                return self.client.chat.completions.create(model=model, **kwargs)
+                return self.groq.chat.completions.create(model=model, **kwargs)
             except RateLimitError as e:
-                logger.warning("Rate limit on %s: %s", model, e)
+                logger.warning("Rate limit on Groq/%s", model)
                 last_error = e
-                time.sleep(0.5)
+                time.sleep(0.3)
                 continue
             except APIStatusError as e:
                 if e.status_code == 429:
-                    logger.warning("429 on %s", model)
+                    logger.warning("429 on Groq/%s", model)
                     last_error = e
-                    time.sleep(0.5)
+                    time.sleep(0.3)
                     continue
                 raise
-        raise last_error or RateLimitError("All models rate-limited", response=None, body=None)
+
+        # --- OpenAI fallback ---
+        if self.openai is not None:
+            try:
+                logger.info("Falling back to OpenAI %s", OPENAI_MODEL)
+                return self.openai.chat.completions.create(
+                    model=OPENAI_MODEL,
+                    **kwargs,
+                )
+            except Exception as e:
+                # OpenAI also has RateLimitError in openai package
+                err_name = type(e).__name__
+                if "RateLimit" in err_name or getattr(e, "status_code", None) == 429:
+                    logger.warning("OpenAI also rate-limited: %s", e)
+                    last_error = e
+                else:
+                    logger.exception("OpenAI fallback error")
+                    last_error = e
+
+        raise last_error or RateLimitError(
+            "All providers rate-limited", response=None, body=None
+        )
 
     async def _execute_tool(self, name: str, args: dict, user_id: int, chat_id: int) -> str:
         try:
@@ -277,7 +315,6 @@ class AgentCore:
         user_message: str,
         extra_context: str = "",
     ) -> str:
-        # Keep history short to save tokens (was 20)
         history = await memory.get_history(user_id, limit=8)
 
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -296,17 +333,23 @@ class AgentCore:
                         tools=TOOLS,
                         tool_choice="auto",
                         temperature=0.6,
-                        max_tokens=1024,  # lower cap to save tokens
+                        max_tokens=1024,
                     )
                 except (RateLimitError, APIStatusError) as e:
                     if isinstance(e, RateLimitError) or getattr(e, "status_code", None) == 429:
                         await memory.add_message(user_id, "assistant", RATE_LIMIT_MSG)
                         return RATE_LIMIT_MSG
                     raise
+                except Exception as e:
+                    # Catch OpenAI rate limit / other provider errors
+                    if "RateLimit" in type(e).__name__ or getattr(e, "status_code", None) == 429:
+                        await memory.add_message(user_id, "assistant", RATE_LIMIT_MSG)
+                        return RATE_LIMIT_MSG
+                    raise
 
                 msg = response.choices[0].message
 
-                if not msg.tool_calls:
+                if not getattr(msg, "tool_calls", None):
                     reply = msg.content or ""
                     await memory.add_message(user_id, "assistant", reply)
                     return reply
@@ -336,7 +379,6 @@ class AgentCore:
                     except json.JSONDecodeError:
                         args = {}
                     result = await self._execute_tool(name, args, user_id, chat_id)
-                    # Truncate long tool results to save tokens in next round
                     if len(result) > 2000:
                         result = result[:2000] + "\n...(مقطوع)"
                     messages.append(
@@ -358,5 +400,8 @@ class AgentCore:
             logger.exception("API error")
             return f"عذراً، حدث خطأ في الخدمة: {e}"
         except Exception as e:
+            if "RateLimit" in type(e).__name__:
+                await memory.add_message(user_id, "assistant", RATE_LIMIT_MSG)
+                return RATE_LIMIT_MSG
             logger.exception("Agent run error")
             return f"عذراً، حدث خطأ: {e}"
