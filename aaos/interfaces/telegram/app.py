@@ -1,6 +1,4 @@
-"""
-Telegram Interface Adapter (AAOS).
-"""
+"""Telegram Interface Adapter (AAOS) — Ops."""
 
 from __future__ import annotations
 
@@ -25,6 +23,7 @@ import edge_tts
 from aaos.config import get_settings
 from aaos.core.agent_loop import AgentLoop
 from aaos.core.supervisor import Supervisor
+from aaos.identity import get_identity_manager
 from aaos.memory import get_default_store
 from aaos.knowledge import get_knowledge_store
 
@@ -41,14 +40,19 @@ loop = AgentLoop()
 supervisor = Supervisor(loop)
 store = get_default_store()
 knowledge = get_knowledge_store()
-groq_client = Groq(api_key=settings.groq_api_key) if settings.groq_api_key else None
+identity = get_identity_manager()
+groq_client = (
+    Groq(api_key=settings.groq_api_key, max_retries=0)
+    if settings.groq_api_key
+    else None
+)
 
-TEMP_DIR = Path(tempfile.gettempdir()) / "mueen_voice"
+TEMP_DIR = Path(tempfile.gettempdir()) / "ops_voice"
 TEMP_DIR.mkdir(exist_ok=True)
 
 RATE_LIMIT_MSG = (
-    "⏳ تم استهلاك الحصة اليومية من خدمة الذكاء الاصطناعي.\n"
-    "حاول مرة أخرى لاحقاً (عادةً تتجدد الحصة يومياً)."
+    "⏳ تم استهلاك الحصة الحالية من مزوّد الذكاء الاصطناعي.\n"
+    "أضف OPENAI_API_KEY في Render أو انتظر تجدد حصة Groq."
 )
 
 
@@ -59,19 +63,19 @@ async def _run_agent(user_id: int, chat_id: int, text: str, extra: str = "") -> 
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    intro = identity.introduce("ar")
     text = (
-        "مرحباً! 👋\n\n"
-        "أنا *مُعين* — AAOS.\n\n"
+        f"{intro}\n\n"
         "✅ بحث · ملفات · مهام · تذكيرات · معرفة · صوت · صور\n\n"
         "/help · /reset · /tasks · /notes"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "أرسل رسالة نصية أو صوتية.\n"
-        "أمثلة: ابحث عن … · أضف مهمة … · احفظ في المعرفة …\n"
+        "أمثلة: ابحث عن … · أضف مهمة … · من أنت؟\n"
         "/reset لمسح المحادثة",
     )
 
@@ -165,7 +169,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for i in range(0, max(len(reply), 1), 4000):
             await update.message.reply_text(reply[i : i + 4000] or "…")
 
-        if len(reply) < 500 and RATE_LIMIT_MSG not in reply:
+        if len(reply) < 500 and "الحصة" not in reply:
             try:
                 await context.bot.send_chat_action(
                     chat_id=chat_id, action="record_voice"
@@ -264,7 +268,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text_exts = {".txt", ".md", ".py", ".json", ".csv", ".log", ".html", ".xml"}
     if Path(filename).suffix.lower() in text_exts:
         content = dest.read_text(encoding="utf-8", errors="replace")[:4000]
-        # Also ingest into knowledge for later search
         try:
             await knowledge.ingest_text(
                 f"telegram:{user_id}:{filename}", content, title=filename
@@ -319,9 +322,7 @@ def build_application() -> Application:
     async def post_init(app: Application):
         await store.init()
         await knowledge.init()
-        logger.info(
-            "AAOS Telegram ready (supervisor=%s)", settings.use_supervisor
-        )
+        logger.info("AAOS Ops Telegram ready")
 
     application.post_init = post_init
     return application
@@ -329,7 +330,7 @@ def build_application() -> Application:
 
 def main():
     app = build_application()
-    print("🤖 مُعين (AAOS Telegram Interface) يعمل...")
+    print("🤖 Ops (AAOS) يعمل...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

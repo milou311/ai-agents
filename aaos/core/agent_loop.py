@@ -1,11 +1,15 @@
 """
 AgentLoop — tool-calling runtime with optional ToT + Reflection + Self-State.
+
+Identity/greeting questions answered locally (no LLM) so the bot still works
+when providers are rate-limited.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from typing import Optional
 
@@ -23,7 +27,18 @@ logger = logging.getLogger(__name__)
 
 RATE_LIMIT_MSG = (
     "⏳ تم استهلاك الحصة الحالية من مزوّد الذكاء الاصطناعي.\n"
-    "حاول بعد دقيقة، أو تأكد أن OPENAI_API_KEY مضاف كاحتياطي."
+    "أضف OPENAI_API_KEY في Render كاحتياطي، أو انتظر تجدد حصة Groq.\n"
+    "الأسئلة عن هويتي تعمل دائماً بدون نموذج."
+)
+
+_IDENTITY_RE = re.compile(
+    r"(^|\s)(من\s*أنت|من\s*انت|من\s*أنتم|عرف\s*نفسك|عرفيني|من\s*هو\s*ops|"
+    r"who\s*are\s*you|what\s*are\s*you|your\s*name|ما\s*اسمك)(\s|$|[؟?!.])",
+    re.I,
+)
+_GREET_RE = re.compile(
+    r"^(مرحبا|مرحباً|السلام|سلام|هلا|اهلا|أهلا|hi|hello|hey)\b",
+    re.I,
 )
 
 
@@ -57,6 +72,17 @@ class AgentLoop:
     def _system_prompt(self) -> str:
         return self.identity.system_prompt_block(include_runtime=False)
 
+    def _local_reply(self, user_message: str) -> Optional[str]:
+        text = (user_message or "").strip()
+        if not text:
+            return None
+        if _IDENTITY_RE.search(text) or text in {"من انا ؟", "من انا؟", "من أنا؟", "من أنا ؟"}:
+            # User often types "من انا" meaning who are you in dialect
+            return self.identity.introduce("ar")
+        if _GREET_RE.search(text) and len(text) < 40:
+            return self.identity.introduce("ar")
+        return None
+
     async def run(
         self,
         user_id: int,
@@ -69,6 +95,15 @@ class AgentLoop:
         goal_id = str(uuid.uuid4())
         self.ops.start_goal(goal_id, user_message, user_id=user_id)
 
+        # Fast path: no LLM needed
+        local = self._local_reply(user_message)
+        if local:
+            await self.memory.add_message(user_id, "user", user_message)
+            await self.memory.add_message(user_id, "assistant", local)
+            metrics.inc("agent.local_reply")
+            self.ops.end_goal(goal_id, ok=True)
+            return local
+
         limit = self.settings.history_limit
         history = await self.memory.get_history(user_id, limit=limit)
 
@@ -79,10 +114,9 @@ class AgentLoop:
             if tools_hint:
                 plan_hint = f"أدوات مرشّحة: {', '.join(tools_hint)}"
 
-        # Tree of Thoughts for medium/high risk or complex goals only
         tot_ctx = ""
         use_tot = (
-            getattr(self.settings, "enable_tot", True)
+            getattr(self.settings, "enable_tot", False)
             and not plan.passthrough
             and plan.risk_level in {"medium", "high"}
         )
@@ -162,8 +196,7 @@ class AgentLoop:
                             result.content
                             or "لم أتمكن من إنشاء رد. حاول إعادة صياغة السؤال."
                         )
-                        # Reflection for non-trivial answers
-                        if getattr(self.settings, "enable_reflection", True) and len(
+                        if getattr(self.settings, "enable_reflection", False) and len(
                             reply
                         ) > 80:
                             try:

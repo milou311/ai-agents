@@ -21,8 +21,9 @@ class Settings:
     api_bearer_token: str = ""
     use_supervisor: bool = False
     provider_cooldown_sec: float = 45.0
-    enable_reflection: bool = True
-    enable_tot: bool = True
+    # Default OFF to protect free-tier quotas (enable when you have headroom)
+    enable_reflection: bool = False
+    enable_tot: bool = False
 
     @staticmethod
     def from_env() -> "Settings":
@@ -30,7 +31,7 @@ class Settings:
             "AAOS_MODEL_FALLBACKS", "llama-3.1-8b-instant,gpt-4o-mini"
         )
 
-        def _flag(name: str, default: bool = True) -> bool:
+        def _flag(name: str, default: bool) -> bool:
             v = os.getenv(name)
             if v is None:
                 return default
@@ -54,8 +55,8 @@ class Settings:
             use_supervisor=os.getenv("AAOS_USE_SUPERVISOR", "").lower()
             in {"1", "true", "yes"},
             provider_cooldown_sec=float(os.getenv("AAOS_PROVIDER_COOLDOWN_SEC", "45")),
-            enable_reflection=_flag("AAOS_ENABLE_REFLECTION", True),
-            enable_tot=_flag("AAOS_ENABLE_TOT", True),
+            enable_reflection=_flag("AAOS_ENABLE_REFLECTION", False),
+            enable_tot=_flag("AAOS_ENABLE_TOT", False),
         )
 
 
