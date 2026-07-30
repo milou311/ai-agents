@@ -23,9 +23,9 @@ from aaos.monitoring import get_metrics, Timer
 logger = logging.getLogger(__name__)
 
 RATE_LIMIT_MSG = (
-    "⏳ حصة النماذج منتهية مؤقتاً (Groq).\n"
-    "• أضف OPENAI_API_KEY في Render ثم Redeploy\n"
-    "• أو انتظر تجدد حصة Groq\n"
+    "⏳ حصة نماذج Gemini منتهية مؤقتاً.\n"
+    "• تحقق من صحة مفتاح GEMINI_API_KEY في Render ثم أعد النشر (Redeploy)\n"
+    "• أو انتظر قليلاً حتى تتجدد حصة الاستخدام.\n"
     "أسئلة الهوية والتحية البسيطة تعمل بدون نموذج."
 )
 
@@ -56,7 +56,7 @@ def _is_rate_limit(e: Exception) -> bool:
     if getattr(e, "status_code", None) == 429:
         return True
     text = str(e).lower()
-    return "rate limit" in text or "429" in text or "too many requests" in text
+    return "rate limit" in text or "429" in text or "too many requests" in text or "resource_exhausted" in text
 
 
 class AgentLoop:
@@ -101,7 +101,6 @@ class AgentLoop:
                 return "تمام، أنا هنا. ماذا تحتاج؟"
             if re.search(r"^لا\b", low):
                 return "حسنًا. إذا احتجت شيئاً أنا موجود."
-            # greetings
             return self.identity.introduce("ar")
 
         return None
@@ -282,3 +281,4 @@ class AgentLoop:
             self.ops.record_error("agent_loop", str(e))
             self.ops.end_goal(goal_id, ok=False)
             return "عذراً، حدث خطأ غير متوقع. حاول مرة أخرى."
+            
