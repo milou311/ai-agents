@@ -1,5 +1,5 @@
 """
-Unified Model Gateway — Gemini 2.0 Provider via google-genai SDK
+Unified Model Gateway — Gemini 1.5 Flash Stable Provider
 """
 
 from __future__ import annotations
@@ -12,8 +12,7 @@ import time
 from typing import Any, Optional
 
 from aaos.config import get_settings
-from aaos.models.types import ChatResult, SyntheticToolCall, ToolCall
-from aaos.monitoring import get_metrics
+from aaos.models.types import ChatResult, SyntheticToolCall
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +58,8 @@ class ModelGateway:
         if gemini_key:
             try:
                 from google import genai
-                # إنشاء العميل الجديد SDK
                 self.client = genai.Client(api_key=gemini_key)
-                logger.info("Google GenAI Client (2.0) initialized successfully.")
+                logger.info("Google GenAI Client initialized successfully.")
             except Exception as e:
                 logger.warning("Google GenAI init failed: %s", e)
 
@@ -83,7 +81,7 @@ class ModelGateway:
         tools: Optional[list[dict[str, Any]]] = None,
         use_tools: bool = True,
         system_prompt: Optional[str] = None,
-        model_name: str = "gemini-2.0-flash",
+        model_name: str = "gemini-1.5-flash",
     ) -> ChatResult:
         if not self.client:
             raise RuntimeError("No model providers configured")
@@ -91,7 +89,6 @@ class ModelGateway:
         if self._on_cooldown("gemini"):
             raise RuntimeError("Gemini provider is currently on cooldown.")
 
-        # بناء نص المحادثة
         formatted_prompt = ""
         if system_prompt:
             formatted_prompt += f"System: {system_prompt}\n\n"
@@ -102,9 +99,9 @@ class ModelGateway:
             formatted_prompt += f"{role.capitalize()}: {content}\n"
 
         try:
-            # الاستدعام الجديد المستقر لنماذج Gemini 2.0
+            # استخدام نموذج gemini-1.5-flash المستقر والمدعوم رسمياً
             response = self.client.models.generate_content(
-                model=model_name,
+                model="gemini-1.5-flash",
                 contents=formatted_prompt,
             )
             
