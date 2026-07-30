@@ -301,7 +301,7 @@ def build_application() -> Application:
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN مفقود")
     if not os.getenv("GEMINI_API_KEY"):
-    raise ValueError("يلزم GEMINI_API_KEY")
+        raise ValueError("يلزم GEMINI_API_KEY")
     
     application = Application.builder().token(token).build()
     application.add_handler(CommandHandler("start", start))
