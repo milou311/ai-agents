@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI: ingest a TXT/MD file into the knowledge base."""
+"""CLI: ingest a file (txt/md/pdf/docx) into keyword + semantic knowledge."""
 
 import argparse
 import asyncio
@@ -13,8 +13,8 @@ from aaos.knowledge import get_knowledge_store
 
 
 async def main():
-    p = argparse.ArgumentParser(description="Ingest file into AAOS knowledge")
-    p.add_argument("path", help="Path to .txt or .md file")
+    p = argparse.ArgumentParser(description="Ingest file into AAOS knowledge (semantic)")
+    p.add_argument("path", help="Path to .txt .md .pdf .docx …")
     args = p.parse_args()
     ks = get_knowledge_store()
     info = await ks.ingest_file(args.path)

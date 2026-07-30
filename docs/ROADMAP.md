@@ -1,33 +1,21 @@
 # AAOS Roadmap
 
-## Phase 0 — Constitution ✅
-## Phase 1 — Modular Runtime ✅
-## Phase 2 — Planning & Knowledge (core done)
-## Phase 3 — Skills / Supervisor (scaffold ✅)
-## Phase 4 — Hardening (scaffold ✅)
+## Phase 0–1 ✅ Modular runtime
+## Phase 2 Planning & Knowledge
+- [x] Keyword knowledge
+- [x] **Semantic Memory Layer** (embeddings + vector store + loaders)
+- [x] PDF / DOCX / TXT loaders
+- [ ] Dedicated vector DB at scale (Chroma/Qdrant) — optional later
 
-## Phase 5 — Identity / Self-Model
+## Phase 3–4 scaffold ✅
+## Phase 5 Identity ✅ (Ops)
+## Phase 6 Runtime self-state (partial)
+## Phase 7 Self-reflection (pending)
 
-- [x] `aaos.identity.IdentityManager` — name, version, role, goals, limits
-- [x] Live inventory of tools & skills
-- [x] Inject identity into AgentLoop system prompt
-- [x] Tool `whoami` + HTTP `GET /v1/identity`
-- [x] Config file `config/identity.json` + env overrides
-- [ ] Richer multi-language intros
-
-## Phase 6 — Operational Self-State
-
-- [x] Basic `runtime_state()` (counts, metrics snapshot)
-- [ ] Active tasks / projects dashboard
-- [ ] Per-skill success rates
-- [ ] Last errors summary for the agent
-
-## Phase 7 — Self-Reflection
-
-- [ ] Episodic performance log
-- [ ] Planner consumes failure patterns
-- [ ] Explicit "I failed at X, adjusting plan" behavior from data — not claims of consciousness
-
-## Later
-
-- Embeddings, PDF ingest, plugin.yaml load, multi-agent parallel
+### Learning ladder (reference)
+1. Memory ✅
+2. Embeddings + Vector Search ✅
+3. Knowledge Graph
+4. Reflection
+5. Skill Learning
+6. Self-Improvement
