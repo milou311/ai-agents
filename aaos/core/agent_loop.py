@@ -1,8 +1,5 @@
 """
-AgentLoop — tool-calling runtime with optional ToT + Reflection + Self-State.
-
-Identity/greeting questions answered locally (no LLM) so the bot still works
-when providers are rate-limited.
+AgentLoop — with offline local replies when providers are rate-limited.
 """
 
 from __future__ import annotations
@@ -26,18 +23,29 @@ from aaos.monitoring import get_metrics, Timer
 logger = logging.getLogger(__name__)
 
 RATE_LIMIT_MSG = (
-    "⏳ تم استهلاك الحصة الحالية من مزوّد الذكاء الاصطناعي.\n"
-    "أضف OPENAI_API_KEY في Render كاحتياطي، أو انتظر تجدد حصة Groq.\n"
-    "الأسئلة عن هويتي تعمل دائماً بدون نموذج."
+    "⏳ حصة النماذج منتهية مؤقتاً (Groq).\n"
+    "• أضف OPENAI_API_KEY في Render ثم Redeploy\n"
+    "• أو انتظر تجدد حصة Groq\n"
+    "أسئلة الهوية والتحية البسيطة تعمل بدون نموذج."
 )
 
 _IDENTITY_RE = re.compile(
-    r"(^|\s)(من\s*أنت|من\s*انت|من\s*أنتم|عرف\s*نفسك|عرفيني|من\s*هو\s*ops|"
-    r"who\s*are\s*you|what\s*are\s*you|your\s*name|ما\s*اسمك)(\s|$|[؟?!.])",
+    r"(من\s*أنت|من\s*انت|من\s*أنتم|من\s*انا|من\s*أنا|عرف\s*نفسك|"
+    r"who\s*are\s*you|what\s*are\s*you|your\s*name|ما\s*اسمك|"
+    r"من\s*هو\s*ops)",
     re.I,
 )
-_GREET_RE = re.compile(
-    r"^(مرحبا|مرحباً|السلام|سلام|هلا|اهلا|أهلا|hi|hello|hey)\b",
+
+# Trivial chat that must never depend on LLM
+_TRIVIAL = re.compile(
+    r"^\s*("
+    r"مرحبا|مرحباً|السلام\s*عليكم|سلام|هلا|اهلا|أهلا|هاي|هلو|"
+    r"hi|hello|hey|yo|"
+    r"حسنا|حسناً|حسنًا|تمام|اوكي|أوكي|ok|okay|"
+    r"شكرا|شكراً|thanks|thank\s*you|"
+    r"صباح\s*الخير|مساء\s*الخير|تصبح\s*على\s*خير|"
+    r"نعم|لا|اها|آه|اه"
+    r")\s*[!.؟?]*\s*$",
     re.I,
 )
 
@@ -76,11 +84,26 @@ class AgentLoop:
         text = (user_message or "").strip()
         if not text:
             return None
-        if _IDENTITY_RE.search(text) or text in {"من انا ؟", "من انا؟", "من أنا؟", "من أنا ؟"}:
-            # User often types "من انا" meaning who are you in dialect
+
+        if _IDENTITY_RE.search(text):
             return self.identity.introduce("ar")
-        if _GREET_RE.search(text) and len(text) < 40:
+
+        if _TRIVIAL.match(text):
+            low = text.lower()
+            name = self.identity.identity.name
+            if re.search(r"شكرا|thanks", low):
+                return "العفو 👍"
+            if re.search(r"صباح", low):
+                return f"صباح النور! أنا {name}، كيف أقدر أساعدك؟"
+            if re.search(r"مساء", low):
+                return f"مساء النور! أنا {name}، تفضّل."
+            if re.search(r"^(حسنا|حسناً|حسنًا|تمام|اوكي|أوكي|ok|okay|نعم|اها|آه|اه)\b", low):
+                return "تمام، أنا هنا. ماذا تحتاج؟"
+            if re.search(r"^لا\b", low):
+                return "حسنًا. إذا احتجت شيئاً أنا موجود."
+            # greetings
             return self.identity.introduce("ar")
+
         return None
 
     async def run(
@@ -95,7 +118,6 @@ class AgentLoop:
         goal_id = str(uuid.uuid4())
         self.ops.start_goal(goal_id, user_message, user_id=user_id)
 
-        # Fast path: no LLM needed
         local = self._local_reply(user_message)
         if local:
             await self.memory.add_message(user_id, "user", user_message)
@@ -153,11 +175,11 @@ class AgentLoop:
                     except Exception as e:
                         if _is_rate_limit(e):
                             self.ops.record_error("rate_limit", str(e))
+                            metrics.inc("agent.rate_limited")
+                            self.ops.end_goal(goal_id, ok=False)
                             await self.memory.add_message(
                                 user_id, "assistant", RATE_LIMIT_MSG
                             )
-                            metrics.inc("agent.rate_limited")
-                            self.ops.end_goal(goal_id, ok=False)
                             return RATE_LIMIT_MSG
                         logger.exception("Chat error")
                         self.ops.record_error("chat", str(e))
@@ -204,7 +226,6 @@ class AgentLoop:
                                 metrics.inc("cognition.reflection")
                                 if ref.revised:
                                     reply = ref.revised
-                                    metrics.inc("cognition.reflection_revised")
                             except Exception as e:
                                 self.ops.record_error("reflection", str(e))
 
