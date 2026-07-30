@@ -300,8 +300,8 @@ def build_application() -> Application:
     token = settings.telegram_bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN مفقود")
-    if not settings.groq_api_key and not settings.openai_api_key:
-        raise ValueError("يلزم GEMINI_API_KEY أو GOOGLE_API_KEY")
+    if not os.getenv("GEMINI_API_KEY") and not os.getenv("GOOGLE_API_KEY"):
+    raise ValueError(" يلزم GEMINI_API_KEY أو GOOGLE_API_KEY")
 
     application = Application.builder().token(token).build()
     application.add_handler(CommandHandler("start", start))
