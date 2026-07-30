@@ -1,8 +1,5 @@
 """
-Multi-agent Supervisor scaffold.
-
-Routes goals to specialist profiles (same AgentLoop, different system hints).
-Full parallel agents come later; this is the coordination surface.
+Multi-agent Supervisor + A2A partial-result exchange.
 """
 
 from __future__ import annotations
@@ -12,6 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from aaos.cognition.a2a import get_a2a_bus
 from aaos.core.agent_loop import AgentLoop
 
 logger = logging.getLogger(__name__)
@@ -46,6 +44,7 @@ PROFILES = [
 class Supervisor:
     def __init__(self, loop: Optional[AgentLoop] = None):
         self.loop = loop or AgentLoop()
+        self.bus = get_a2a_bus()
 
     def select_profile(self, text: str) -> AgentProfile:
         for p in PROFILES:
@@ -58,9 +57,46 @@ class Supervisor:
     async def run(self, user_id: int, chat_id: int, text: str) -> str:
         profile = self.select_profile(text)
         logger.info("Supervisor routed to profile=%s", profile.name)
-        return await self.loop.run(
+
+        # A2A: announce assignment (other agents can react without Supervisor)
+        self.bus.publish(
+            sender="supervisor",
+            topic="broadcast:assignment",
+            payload={
+                "agent": profile.name,
+                "user_id": user_id,
+                "goal": text[:300],
+            },
+        )
+
+        # Pull any pending partial results for this specialist
+        pending = self.bus.receive(profile.name, max_messages=5)
+        extra_parts = [
+            f"[A2A from {m.sender}] {m.payload}" for m in pending
+        ]
+        extra = f"[agent_profile={profile.name}] {profile.system_hint}"
+        if extra_parts:
+            extra += "\n" + "\n".join(extra_parts)[:400]
+
+        reply = await self.loop.run(
             user_id,
             chat_id,
             text,
-            extra_context=f"[agent_profile={profile.name}] {profile.system_hint}",
+            extra_context=extra,
         )
+
+        # Publish partial/final for peers
+        self.bus.send(
+            sender=profile.name,
+            to_agent="supervisor",
+            payload={"status": "done", "preview": (reply or "")[:200]},
+        )
+        self.bus.publish(
+            sender=profile.name,
+            topic="broadcast:result",
+            payload={
+                "agent": profile.name,
+                "preview": (reply or "")[:200],
+            },
+        )
+        return reply

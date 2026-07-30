@@ -1,4 +1,4 @@
-"""HTTP API Interface — FastAPI adapter over AgentLoop / Supervisor."""
+"""HTTP API Interface."""
 
 from __future__ import annotations
 
@@ -13,13 +13,14 @@ from aaos.config import get_settings
 from aaos.core.agent_loop import AgentLoop
 from aaos.core.supervisor import Supervisor
 from aaos.identity import get_identity_manager
+from aaos.identity.state import get_operational_state
 from aaos.knowledge import get_knowledge_store
 from aaos.memory import get_default_store
 from aaos.monitoring import get_metrics
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="AAOS HTTP API", version="0.4.0")
+app = FastAPI(title="AAOS HTTP API", version="0.6.0")
 _settings = get_settings()
 _loop = AgentLoop()
 _supervisor = Supervisor(_loop)
@@ -64,13 +65,22 @@ async def _startup():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "system": "aaos", "metrics": get_metrics().snapshot()}
+    return {
+        "status": "ok",
+        "system": "aaos",
+        "metrics": get_metrics().snapshot(),
+        "operational": get_operational_state().snapshot(),
+    }
 
 
 @app.get("/v1/identity")
 async def identity():
-    """Public self-model (no secrets)."""
     return _identity.self_model(include_runtime=True)
+
+
+@app.get("/v1/state")
+async def operational_state():
+    return get_operational_state().snapshot()
 
 
 @app.post("/v1/chat", response_model=ChatResponse, dependencies=[Depends(require_auth)])
@@ -94,20 +104,14 @@ async def chat(body: ChatBody):
     return ChatResponse(request_id=request_id, reply=reply)
 
 
-@app.post(
-    "/v1/knowledge/ingest",
-    dependencies=[Depends(require_auth)],
-)
+@app.post("/v1/knowledge/ingest", dependencies=[Depends(require_auth)])
 async def knowledge_ingest(body: IngestBody):
     info = await _knowledge.ingest_text(body.source, body.text, title=body.title)
     get_metrics().inc("knowledge.ingest")
     return info
 
 
-@app.get(
-    "/v1/knowledge/search",
-    dependencies=[Depends(require_auth)],
-)
+@app.get("/v1/knowledge/search", dependencies=[Depends(require_auth)])
 async def knowledge_search(q: str, limit: int = 5):
     hits = await _knowledge.search(q, limit=limit)
     return {"query": q, "hits": hits}

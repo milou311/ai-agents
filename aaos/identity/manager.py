@@ -1,4 +1,4 @@
-"""Identity Manager — single source of Self-Model."""
+"""Identity Manager — single source of Self-Model + Phase 6 state."""
 
 from __future__ import annotations
 
@@ -19,26 +19,7 @@ def _load_identity_file(path: Path) -> dict[str, Any]:
         return {}
     if path.suffix.lower() in {".json"} or text.startswith("{"):
         return json.loads(text)
-    data: dict[str, Any] = {}
-    current_list: str | None = None
-    for line in text.splitlines():
-        raw = line.rstrip()
-        if not raw or raw.lstrip().startswith("#"):
-            continue
-        if raw.lstrip().startswith("- ") and current_list:
-            data.setdefault(current_list, []).append(raw.lstrip()[2:].strip())
-            continue
-        if ":" in raw and not raw.strip().startswith("-"):
-            key, _, val = raw.partition(":")
-            key = key.strip()
-            val = val.strip()
-            if val == "":
-                current_list = key
-                data[key] = []
-            else:
-                current_list = None
-                data[key] = val.strip('"\'')
-    return data
+    return {}
 
 
 class IdentityManager:
@@ -114,6 +95,7 @@ class IdentityManager:
             "executor",
             "tools",
             "knowledge",
+            "cognition",
             "skills",
             "plugins",
             "identity",
@@ -139,10 +121,25 @@ class IdentityManager:
         try:
             from aaos.plugins import PluginLoader
 
-            plugins = PluginLoader().discover()
-            state["plugins_discovered"] = len(plugins)
+            state["plugins_discovered"] = len(PluginLoader().discover())
         except Exception:
             state["plugins_discovered"] = 0
+        try:
+            from aaos.identity.state import get_operational_state
+
+            state["operational"] = get_operational_state().snapshot()
+        except Exception:
+            state["operational"] = {}
+        try:
+            from aaos.cognition.a2a import get_a2a_bus
+
+            bus = get_a2a_bus()
+            state["a2a_recent"] = [
+                {"sender": m.sender, "topic": m.topic}
+                for m in bus.history("broadcast:result", limit=5)
+            ]
+        except Exception:
+            state["a2a_recent"] = []
         return state
 
     def self_model(self, include_runtime: bool = True) -> dict[str, Any]:
@@ -158,7 +155,6 @@ class IdentityManager:
 
     def system_prompt_block(self, include_runtime: bool = False) -> str:
         ident = self.identity
-        # Keep compact to save tokens — full tool list only if asked via whoami
         lines = [
             f"أنت {ident.name} (الإصدار {ident.version}) — {ident.role}.",
             "أسلوبك: ودود، واضح، مختصر، بالعربية المبسطة أو حسب لغة المستخدم.",
@@ -169,8 +165,11 @@ class IdentityManager:
         ]
         if include_runtime:
             rt = self.runtime_state()
+            op = rt.get("operational") or {}
             lines.append(
-                f"حالة: tools={rt.get('tools_count')} skills={rt.get('skills_count')}"
+                f"حالة: tools={rt.get('tools_count')} "
+                f"active_goals={op.get('active_goals_count', 0)} "
+                f"uptime={op.get('uptime_sec', 0)}s"
             )
         return "\n".join(lines)
 

@@ -1,4 +1,4 @@
-"""Central configuration — no magic numbers in business modules."""
+"""Central configuration."""
 
 from __future__ import annotations
 
@@ -21,12 +21,21 @@ class Settings:
     api_bearer_token: str = ""
     use_supervisor: bool = False
     provider_cooldown_sec: float = 45.0
+    enable_reflection: bool = True
+    enable_tot: bool = True
 
     @staticmethod
     def from_env() -> "Settings":
         fallbacks = os.getenv(
             "AAOS_MODEL_FALLBACKS", "llama-3.1-8b-instant,gpt-4o-mini"
         )
+
+        def _flag(name: str, default: bool = True) -> bool:
+            v = os.getenv(name)
+            if v is None:
+                return default
+            return v.lower() in {"1", "true", "yes", "on"}
+
         return Settings(
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             groq_api_key=os.getenv("GROQ_API_KEY", ""),
@@ -45,6 +54,8 @@ class Settings:
             use_supervisor=os.getenv("AAOS_USE_SUPERVISOR", "").lower()
             in {"1", "true", "yes"},
             provider_cooldown_sec=float(os.getenv("AAOS_PROVIDER_COOLDOWN_SEC", "45")),
+            enable_reflection=_flag("AAOS_ENABLE_REFLECTION", True),
+            enable_tot=_flag("AAOS_ENABLE_TOT", True),
         )
 
 
