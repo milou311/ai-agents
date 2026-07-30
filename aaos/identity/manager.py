@@ -1,10 +1,4 @@
-"""
-Identity Manager — single source of Self-Model.
-
-Phase 5: static identity + live capability inventory (tools, skills, modules).
-Phase 6: operational state snapshot (metrics, counts).
-Phase 7: reflection from episodic/performance logs (future).
-"""
+"""Identity Manager — single source of Self-Model."""
 
 from __future__ import annotations
 
@@ -20,14 +14,11 @@ from aaos.identity.schema import Identity
 def _load_identity_file(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
-    text = path.read_text(encoding="utf-8")
-    # Minimal YAML-ish or JSON. Prefer JSON for zero deps.
-    text = text.strip()
+    text = path.read_text(encoding="utf-8").strip()
     if not text:
         return {}
     if path.suffix.lower() in {".json"} or text.startswith("{"):
         return json.loads(text)
-    # Very small YAML subset: key: value and lists with "- item"
     data: dict[str, Any] = {}
     current_list: str | None = None
     for line in text.splitlines():
@@ -61,7 +52,6 @@ class IdentityManager:
     def _build_identity(self) -> Identity:
         raw = _load_identity_file(self.config_path)
         base = Identity()
-        # Env overrides for quick rename without file edit
         name = os.getenv("AAOS_AGENT_NAME") or raw.get("name") or base.name
         name_en = os.getenv("AAOS_AGENT_NAME_EN") or raw.get("name_en") or base.name_en
         version = (
@@ -92,8 +82,6 @@ class IdentityManager:
     def reload(self) -> Identity:
         self.identity = self._build_identity()
         return self.identity
-
-    # --- Live inventory (Phase 5) ---
 
     def list_tools(self) -> list[str]:
         try:
@@ -135,8 +123,6 @@ class IdentityManager:
             "interfaces",
         ]
 
-    # --- Phase 6 operational snapshot ---
-
     def runtime_state(self) -> dict[str, Any]:
         state: dict[str, Any] = {
             "tools_count": len(self.list_tools()),
@@ -159,8 +145,6 @@ class IdentityManager:
             state["plugins_discovered"] = 0
         return state
 
-    # --- Public Self-Model ---
-
     def self_model(self, include_runtime: bool = True) -> dict[str, Any]:
         model = self.identity.to_dict()
         model["capabilities"] = {
@@ -173,24 +157,20 @@ class IdentityManager:
         return model
 
     def system_prompt_block(self, include_runtime: bool = False) -> str:
-        """Compact block injected into AgentLoop system context."""
         ident = self.identity
-        tools = ", ".join(self.list_tools()[:20])
-        skills = ", ".join(self.list_skills()) or "(none)"
+        # Keep compact to save tokens — full tool list only if asked via whoami
         lines = [
-            f"هويتك: اسمك «{ident.name}» ({ident.name_en})، الإصدار {ident.version}.",
-            f"دورك: {ident.role}",
-            f"أهدافك: {'; '.join(ident.goals)}",
-            f"حدودك: {'; '.join(ident.limits)}",
-            f"أدواتك المتاحة: {tools}",
-            f"مهاراتك المسجّلة: {skills}",
-            "إذا سُئلت من أنت؟ عرّف بنفسك باختصار دون ادعاء وعي أو مشاعر بشرية.",
+            f"أنت {ident.name} (الإصدار {ident.version}) — {ident.role}.",
+            "أسلوبك: ودود، واضح، مختصر، بالعربية المبسطة أو حسب لغة المستخدم.",
+            f"أهدافك: {'; '.join(ident.goals[:3])}",
+            "إذا سُئلت من أنت؟ عرّف بنفسك باسمك وإصدارك باختصار وادعُ للمساعدة.",
+            "استخدم الأدوات فقط عند الحاجة (بحث، ملفات، مهام، معرفة…).",
+            "لا تختلق معلومات. لا تدّعِ مشاعر بشرية.",
         ]
         if include_runtime:
             rt = self.runtime_state()
             lines.append(
-                f"حالة تشغيلية مختصرة: tools={rt.get('tools_count')} "
-                f"skills={rt.get('skills_count')} plugins={rt.get('plugins_discovered')}"
+                f"حالة: tools={rt.get('tools_count')} skills={rt.get('skills_count')}"
             )
         return "\n".join(lines)
 
@@ -198,12 +178,12 @@ class IdentityManager:
         ident = self.identity
         if lang.startswith("en"):
             return (
-                f"I am {ident.name_en} (v{ident.version}), {ident.role}. "
+                f"I'm {ident.name_en} (v{ident.version}), your AI assistant. "
                 f"How can I help you today?"
             )
         return (
-            f"أنا {ident.name} (الإصدار {ident.version}). "
-            f"{ident.role}. تفضّل، كيف أستطيع خدمتك؟"
+            f"أنا {ident.name} (الإصدار {ident.version})، مساعدك الذكي. "
+            f"تفضّل، كيف أقدر أخدمك؟"
         )
 
 

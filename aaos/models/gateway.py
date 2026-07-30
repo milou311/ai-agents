@@ -1,7 +1,8 @@
 """
-Unified Model Gateway — provider-agnostic chat with failover.
+Unified Model Gateway — multi-provider chat with FAST failover on 429.
 
-Core and Planner depend on this module, never on groq/openai SDKs directly.
+On rate limit: skip provider immediately (no 14s client retry loops).
+Order: primary → other models on same provider → other providers.
 """
 
 from __future__ import annotations
@@ -14,8 +15,12 @@ from typing import Any, Optional
 
 from aaos.config import get_settings
 from aaos.models.types import ChatResult, SyntheticToolCall, ToolCall
+from aaos.monitoring import get_metrics
 
 logger = logging.getLogger(__name__)
+
+# In-process cooldown: after 429, skip this provider for N seconds
+_provider_cooldown_until: dict[str, float] = {}
 
 
 def _is_rate_limit(e: Exception) -> bool:
@@ -23,7 +28,8 @@ def _is_rate_limit(e: Exception) -> bool:
         return True
     if getattr(e, "status_code", None) == 429:
         return True
-    return False
+    text = str(e).lower()
+    return "rate limit" in text or "too many requests" in text or "429" in text
 
 
 def _is_tool_use_failed(e: Exception) -> bool:
@@ -87,12 +93,16 @@ class ModelGateway:
         self.settings = settings
         self._groq = None
         self._openai = None
-
+        # max_retries=0 → SDK must NOT sleep 14s internally; we own failover
         if settings.groq_api_key:
             try:
                 from groq import Groq
 
-                self._groq = Groq(api_key=settings.groq_api_key)
+                self._groq = Groq(
+                    api_key=settings.groq_api_key,
+                    max_retries=0,
+                    timeout=30.0,
+                )
             except Exception as e:
                 logger.warning("Groq init failed: %s", e)
 
@@ -100,28 +110,51 @@ class ModelGateway:
             try:
                 from openai import OpenAI
 
-                self._openai = OpenAI(api_key=settings.openai_api_key)
+                self._openai = OpenAI(
+                    api_key=settings.openai_api_key,
+                    max_retries=0,
+                    timeout=30.0,
+                )
             except Exception as e:
                 logger.warning("OpenAI init failed: %s", e)
 
+    def _on_cooldown(self, provider: str) -> bool:
+        until = _provider_cooldown_until.get(provider, 0)
+        return time.time() < until
+
+    def _mark_cooldown(self, provider: str) -> None:
+        sec = float(getattr(self.settings, "provider_cooldown_sec", 45))
+        _provider_cooldown_until[provider] = time.time() + sec
+        logger.warning(
+            "Provider %s on cooldown for %.0fs after rate limit", provider, sec
+        )
+
     def _chain(self) -> list[tuple[str, str]]:
-        """Return (model, provider) pairs in failover order."""
+        """(model, provider) — skip providers currently in cooldown."""
         chain: list[tuple[str, str]] = []
         primary = self.settings.primary_model
-        # Primary always tried on Groq if available
-        if self._groq:
+
+        if self._groq and not self._on_cooldown("groq"):
             chain.append((primary, "groq"))
             for m in self.settings.fallback_models:
-                if m.startswith("gpt-"):
+                if m.startswith("gpt-") or m.startswith("o1") or m.startswith("o3"):
                     continue
                 if m != primary:
                     chain.append((m, "groq"))
-        if self._openai:
+
+        if self._openai and not self._on_cooldown("openai"):
             for m in self.settings.fallback_models:
                 if m.startswith("gpt-") or m.startswith("o1") or m.startswith("o3"):
                     chain.append((m, "openai"))
             if not any(p == "openai" for _, p in chain):
                 chain.append(("gpt-4o-mini", "openai"))
+
+        # If everything on cooldown, try all anyway (last resort)
+        if not chain:
+            if self._openai:
+                chain.append(("gpt-4o-mini", "openai"))
+            if self._groq:
+                chain.append((primary, "groq"))
         return chain
 
     def _create(
@@ -164,8 +197,10 @@ class ModelGateway:
         if not chain:
             raise RuntimeError("No model providers configured")
 
+        metrics = get_metrics()
         for model, provider in chain:
             try:
+                t0 = time.perf_counter()
                 resp = self._create(
                     provider=provider,
                     model=model,
@@ -173,13 +208,21 @@ class ModelGateway:
                     tools=tools,
                     use_tools=use_tools and bool(tools),
                 )
+                metrics.timing("model.latency_ms", (time.perf_counter() - t0) * 1000)
+                metrics.inc(f"model.ok.{provider}")
                 msg = resp.choices[0].message
                 return _normalize_message(msg, model, provider)
             except Exception as e:
                 if _is_rate_limit(e):
-                    logger.warning("Rate limit %s/%s", provider, model)
+                    metrics.inc(f"model.429.{provider}")
+                    logger.warning(
+                        "429 on %s/%s — failover immediately (no long wait)",
+                        provider,
+                        model,
+                    )
+                    self._mark_cooldown(provider)
                     last_error = e
-                    time.sleep(0.3)
+                    # NO sleep — jump to next model/provider
                     continue
 
                 if use_tools and _is_tool_use_failed(e):
@@ -200,11 +243,15 @@ class ModelGateway:
                         return _normalize_message(msg, model, provider)
                     except Exception as e2:
                         last_error = e2
+                        if _is_rate_limit(e2):
+                            self._mark_cooldown(provider)
                         continue
 
                 status = getattr(e, "status_code", None)
                 if status and 400 <= status < 500 and status != 401:
-                    logger.warning("Client error %s on %s/%s: %s", status, provider, model, e)
+                    logger.warning(
+                        "Client error %s on %s/%s: %s", status, provider, model, e
+                    )
                     last_error = e
                     continue
                 raise
