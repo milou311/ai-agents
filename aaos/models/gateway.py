@@ -57,7 +57,9 @@ def _parse_xml_tool_call(text: str) -> Optional[tuple[str, dict]]:
                 args = {}
             return name, args
     return None
-    class ModelGateway:
+
+
+class ModelGateway:
     def __init__(self):
         settings = get_settings()
         self.settings = settings
@@ -69,12 +71,11 @@ def _parse_xml_tool_call(text: str) -> Optional[tuple[str, dict]]:
                 import google.generativeai as genai
                 genai.configure(api_key=gemini_key)
                 
-                # تهيئة نماذج Gemini المتنوعة (Flash, Pro, Flash-Lite)
+                # تهيئة نماذج Gemini
                 self._gemini_models["flash"] = genai.GenerativeModel('gemini-2.0-flash')
                 self._gemini_models["pro"] = genai.GenerativeModel('gemini-2.0-pro-exp')
                 self._gemini_models["lite"] = genai.GenerativeModel('gemini-2.0-flash-lite')
                 
-                # تعيين النموذج الافتراضي
                 self._primary_model = self._gemini_models["flash"]
                 logger.info("Gemini models initialized successfully.")
             except Exception as e:
@@ -100,20 +101,14 @@ def _parse_xml_tool_call(text: str) -> Optional[tuple[str, dict]]:
         system_prompt: Optional[str] = None,
         model_type: str = "flash",
     ) -> ChatResult:
-        """
-        Sends chat completion request to Gemini.
-        `model_type` accepts: 'flash', 'pro', or 'lite'.
-        """
         if not self._gemini_models:
             raise RuntimeError("No model providers configured")
 
         if self._on_cooldown("gemini"):
             raise RuntimeError("Gemini provider is currently on cooldown due to rate limits.")
 
-        # اختيار النموذج المناسب بناءً على الطلب
         selected_model = self._gemini_models.get(model_type, self._primary_model)
 
-        # تحويل صيغة المحادثة إلى نص يفهمه Gemini
         prompt_parts = []
         if system_prompt:
             prompt_parts.append(f"System: {system_prompt}\n")
@@ -129,7 +124,6 @@ def _parse_xml_tool_call(text: str) -> Optional[tuple[str, dict]]:
             response = selected_model.generate_content(full_prompt)
             text_response = response.text if response and hasattr(response, 'text') else ""
 
-            # فحص ما إذا كان هناك استدعاء أدوات داخل النص
             xml_tool = _parse_xml_tool_call(text_response)
             tool_calls = []
             if xml_tool:
@@ -147,4 +141,4 @@ def _parse_xml_tool_call(text: str) -> Optional[tuple[str, dict]]:
             if _is_rate_limit(e):
                 self._mark_cooldown("gemini")
             raise e
-    
+            
