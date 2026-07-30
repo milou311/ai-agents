@@ -1,7 +1,5 @@
 """
-Unified Model Gateway — multi-provider chat with FAST failover on 429.
-
-Configured specifically for Google Gemini Models (Flash 2.0, Pro 2.0, Flash-Lite 2.0).
+Unified Model Gateway — Gemini 2.0 Provider via google-genai SDK
 """
 
 from __future__ import annotations
@@ -19,7 +17,6 @@ from aaos.monitoring import get_metrics
 
 logger = logging.getLogger(__name__)
 
-# In-process cooldown: after 429, skip this provider for N seconds
 _provider_cooldown_until: dict[str, float] = {}
 
 
@@ -30,13 +27,6 @@ def _is_rate_limit(e: Exception) -> bool:
         return True
     text = str(e).lower()
     return "rate limit" in text or "too many requests" in text or "429" in text or "resource_exhausted" in text
-
-
-def _is_tool_use_failed(e: Exception) -> bool:
-    if getattr(e, "status_code", None) != 400:
-        return False
-    text = str(e).lower()
-    return "tool_use_failed" in text or "failed to call a function" in text
 
 
 def _parse_xml_tool_call(text: str) -> Optional[tuple[str, dict]]:
@@ -63,25 +53,19 @@ class ModelGateway:
     def __init__(self):
         settings = get_settings()
         self.settings = settings
-        self._gemini_models = {}
+        self.client = None
 
         gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         if gemini_key:
             try:
-                import google.generativeai as genai
-                genai.configure(api_key=gemini_key)
-                
-                # تهيئة نماذج Gemini
-                self._gemini_models["flash"] = genai.GenerativeModel('gemini-2.0-flash')
-                self._gemini_models["pro"] = genai.GenerativeModel('gemini-2.0-pro-exp')
-                self._gemini_models["lite"] = genai.GenerativeModel('gemini-2.0-flash-lite')
-                
-                self._primary_model = self._gemini_models["flash"]
-                logger.info("Gemini models initialized successfully.")
+                from google import genai
+                # إنشاء العميل الجديد SDK
+                self.client = genai.Client(api_key=gemini_key)
+                logger.info("Google GenAI Client (2.0) initialized successfully.")
             except Exception as e:
-                logger.warning("Gemini init failed: %s", e)
+                logger.warning("Google GenAI init failed: %s", e)
 
-        if not self._gemini_models:
+        if not self.client:
             raise RuntimeError("No model providers configured")
 
     def _on_cooldown(self, provider: str) -> bool:
@@ -99,29 +83,31 @@ class ModelGateway:
         tools: Optional[list[dict[str, Any]]] = None,
         use_tools: bool = True,
         system_prompt: Optional[str] = None,
-        model_type: str = "flash",
+        model_name: str = "gemini-2.0-flash",
     ) -> ChatResult:
-        if not self._gemini_models:
+        if not self.client:
             raise RuntimeError("No model providers configured")
 
         if self._on_cooldown("gemini"):
-            raise RuntimeError("Gemini provider is currently on cooldown due to rate limits.")
+            raise RuntimeError("Gemini provider is currently on cooldown.")
 
-        selected_model = self._gemini_models.get(model_type, self._primary_model)
-
-        prompt_parts = []
+        # بناء نص المحادثة
+        formatted_prompt = ""
         if system_prompt:
-            prompt_parts.append(f"System: {system_prompt}\n")
+            formatted_prompt += f"System: {system_prompt}\n\n"
 
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
-            prompt_parts.append(f"{role.capitalize()}: {content}")
-
-        full_prompt = "\n\n".join(prompt_parts)
+            formatted_prompt += f"{role.capitalize()}: {content}\n"
 
         try:
-            response = selected_model.generate_content(full_prompt)
+            # الاستدعام الجديد المستقر لنماذج Gemini 2.0
+            response = self.client.models.generate_content(
+                model=model_name,
+                contents=formatted_prompt,
+            )
+            
             text_response = response.text if response and hasattr(response, 'text') else ""
 
             xml_tool = _parse_xml_tool_call(text_response)
