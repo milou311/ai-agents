@@ -1,11 +1,4 @@
-"""
-HTTP API Interface — FastAPI adapter over AgentLoop / Supervisor.
-
-Run:
-  uvicorn aaos.interfaces.http.app:app --host 0.0.0.0 --port 8000
-
-If AAOS_API_TOKEN is set, send: Authorization: Bearer <token>
-"""
+"""HTTP API Interface — FastAPI adapter over AgentLoop / Supervisor."""
 
 from __future__ import annotations
 
@@ -19,18 +12,20 @@ from pydantic import BaseModel
 from aaos.config import get_settings
 from aaos.core.agent_loop import AgentLoop
 from aaos.core.supervisor import Supervisor
+from aaos.identity import get_identity_manager
 from aaos.knowledge import get_knowledge_store
 from aaos.memory import get_default_store
 from aaos.monitoring import get_metrics
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="AAOS HTTP API", version="0.3.0")
+app = FastAPI(title="AAOS HTTP API", version="0.4.0")
 _settings = get_settings()
 _loop = AgentLoop()
 _supervisor = Supervisor(_loop)
 _store = get_default_store()
 _knowledge = get_knowledge_store()
+_identity = get_identity_manager()
 
 
 class ChatBody(BaseModel):
@@ -70,6 +65,12 @@ async def _startup():
 @app.get("/health")
 async def health():
     return {"status": "ok", "system": "aaos", "metrics": get_metrics().snapshot()}
+
+
+@app.get("/v1/identity")
+async def identity():
+    """Public self-model (no secrets)."""
+    return _identity.self_model(include_runtime=True)
 
 
 @app.post("/v1/chat", response_model=ChatResponse, dependencies=[Depends(require_auth)])

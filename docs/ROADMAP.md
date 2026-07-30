@@ -2,29 +2,32 @@
 
 ## Phase 0 — Constitution ✅
 ## Phase 1 — Modular Runtime ✅
+## Phase 2 — Planning & Knowledge (core done)
+## Phase 3 — Skills / Supervisor (scaffold ✅)
+## Phase 4 — Hardening (scaffold ✅)
 
-## Phase 2 — Planning & Knowledge
+## Phase 5 — Identity / Self-Model
 
-- [x] Planner, Knowledge, Executor, HTTP API, CLI, knowledge tools
-- [ ] Embeddings / vector search
-- [ ] PDF/DOCX ingest
-- [ ] HTTP API auth
+- [x] `aaos.identity.IdentityManager` — name, version, role, goals, limits
+- [x] Live inventory of tools & skills
+- [x] Inject identity into AgentLoop system prompt
+- [x] Tool `whoami` + HTTP `GET /v1/identity`
+- [x] Config file `config/identity.json` + env overrides
+- [ ] Richer multi-language intros
 
-## Phase 3 — Multi-Agent & Skills
+## Phase 6 — Operational Self-State
 
-- [x] Skills model + SkillRunner
-- [x] Plugin loader scaffold
-- [x] Supervisor profile routing
-- [ ] Deeper multi-agent parallel execution
-- [ ] plugin.yaml dynamic load
+- [x] Basic `runtime_state()` (counts, metrics snapshot)
+- [ ] Active tasks / projects dashboard
+- [ ] Per-skill success rates
+- [ ] Last errors summary for the agent
 
-## Phase 4 — Hardening
+## Phase 7 — Self-Reflection
 
-- [x] Metrics + audit helpers
-- [x] Permission map enforced in ToolRegistry
-- [ ] Prometheus / OpenTelemetry export
-- [ ] Secret manager integration
+- [ ] Episodic performance log
+- [ ] Planner consumes failure patterns
+- [ ] Explicit "I failed at X, adjusting plan" behavior from data — not claims of consciousness
 
-## Phase 5+ — Scale
+## Later
 
-- Enterprise connectors, self-host, evaluation harness
+- Embeddings, PDF ingest, plugin.yaml load, multi-agent parallel

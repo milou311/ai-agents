@@ -5,6 +5,7 @@ Tool Manager — register, list specs, invoke with permission checks + audit.
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 from typing import Any, Callable, Iterable
 
@@ -94,6 +95,7 @@ def build_default_registry() -> ToolRegistry:
         manage_notes,
     )
     from aaos.knowledge import get_knowledge_store
+    from aaos.identity import get_identity_manager
 
     reg = ToolRegistry()
 
@@ -300,6 +302,31 @@ def build_default_registry() -> ToolRegistry:
                 "title": {"type": "string"},
             },
             "required": ["text"],
+        },
+    )
+
+    def _whoami(args, ctx):
+        im = get_identity_manager()
+        detail = (args.get("detail") or "short").lower()
+        if detail in {"full", "json", "runtime"}:
+            return json.dumps(
+                im.self_model(include_runtime=True), ensure_ascii=False, indent=2
+            )
+        return im.introduce()
+
+    reg.register(
+        "whoami",
+        _whoami,
+        "Return the agent identity / self-model (name, version, capabilities). "
+        "Use when the user asks who you are or what you can do.",
+        {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "type": "string",
+                    "description": "short | full",
+                },
+            },
         },
     )
 

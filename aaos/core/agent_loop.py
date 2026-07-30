@@ -1,7 +1,7 @@
 """
 AgentLoop — multi-step tool-calling runtime.
 
-Uses ModelGateway + MemoryStore + ToolRegistry + Planner (hints only).
+Uses ModelGateway + MemoryStore + ToolRegistry + Planner + Identity.
 """
 
 from __future__ import annotations
@@ -11,29 +11,13 @@ import logging
 from typing import Optional
 
 from aaos.config import get_settings
+from aaos.identity import get_identity_manager
 from aaos.memory import MemoryStore, get_default_store
 from aaos.models import ModelGateway, ChatResult, SyntheticToolCall
 from aaos.planner import Planner
 from aaos.tools import ToolRegistry, build_default_registry
 
 logger = logging.getLogger(__name__)
-
-SYSTEM_PROMPT = """أنت مساعد شخصي ذكي اسمه "مُعين".
-نتحدث بالعربية المبسطة أو الدارجة حسب المستخدم، وبالإنجليزية بطلاقة.
-
-قدراتك (استخدم الأدوات عند الحاجة فقط):
-- البحث على الإنترنت
-- قراءة/كتابة الملفات
-- المهام والتذكيرات والملاحظات
-- قاعدة المعرفة المحلية (knowledge_search / knowledge_ingest)
-- استدعاء APIs
-
-قواعد:
-- كن مختصراً وواضحاً.
-- لا تختلق معلومات.
-- إذا وُجدت خطة مقترحة في السياق، اتبعها إن كانت مناسبة.
-- لا تذكر أسماء الأدوات التقنية إلا إذا سُئلت.
-"""
 
 RATE_LIMIT_MSG = (
     "⏳ تم استهلاك الحصة اليومية من خدمة الذكاء الاصطناعي.\n"
@@ -63,6 +47,17 @@ class AgentLoop:
         self.memory = memory or get_default_store()
         self.tools = tools or build_default_registry()
         self.planner = planner or Planner()
+        self.identity = get_identity_manager()
+
+    def _system_prompt(self) -> str:
+        ident_block = self.identity.system_prompt_block(include_runtime=False)
+        return (
+            f"{ident_block}\n\n"
+            "نتحدث بالعربية المبسطة أو الدارجة حسب المستخدم، وبالإنجليزية بطلاقة.\n"
+            "استخدم الأدوات عند الحاجة فقط.\n"
+            "كن مختصراً وواضحاً. لا تختلق معلومات.\n"
+            "لا تذكر أسماء الأدوات التقنية إلا إذا سُئلت.\n"
+        )
 
     async def run(
         self,
@@ -87,7 +82,7 @@ class AgentLoop:
                 f"risk={plan.risk_level}; steps=[{summary}]"
             )
 
-        messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages: list[dict] = [{"role": "system", "content": self._system_prompt()}]
         if plan_hint:
             messages.append({"role": "system", "content": plan_hint[:500]})
         if extra_context:

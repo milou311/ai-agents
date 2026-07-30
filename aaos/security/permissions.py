@@ -1,10 +1,9 @@
-"""Permission scopes for tools (enforcement expands in Phase 4)."""
+"""Permission scopes for tools."""
 
 from __future__ import annotations
 
 from typing import Iterable
 
-# Canonical permission names
 PERM_NET = "net:outbound"
 PERM_FILES_READ = "files:read"
 PERM_FILES_WRITE = "files:write"
@@ -31,6 +30,7 @@ TOOL_PERMISSIONS: dict[str, set[str]] = {
     "manage_notes": {PERM_MEMORY_WRITE},
     "knowledge_search": set(),
     "knowledge_ingest": {PERM_KNOWLEDGE_WRITE},
+    "whoami": set(),
 }
 
 
