@@ -1,9 +1,5 @@
 """
-Model Gateway — Gemini ONLY (robust).
-
-- Tries multiple Gemini model ids if primary fails
-- Retries without tools on tool-schema errors
-- Handles empty/blocked candidates gracefully
+Model Gateway — Gemini ONLY (robust, honest errors).
 """
 
 from __future__ import annotations
@@ -20,28 +16,36 @@ from aaos.models.types import ChatResult, SyntheticToolCall
 logger = logging.getLogger(__name__)
 
 _cooldown_until: float = 0.0
+_last_error: str = ""
 
-# Order: primary from settings first, then stable free-tier friendly ids
 _GEMINI_FALLBACKS = (
-    "gemini-2.5-flash",
     "gemini-2.0-flash",
+    "gemini-2.5-flash",
     "gemini-flash-latest",
     "gemini-1.5-flash",
 )
 
 
-def _is_rate_limit(e: Exception) -> bool:
+def get_last_gateway_error() -> str:
+    return _last_error
+
+
+def _is_true_rate_limit(e: Exception) -> bool:
+    """Strict: only real 429 / resource exhausted, not every error mentioning quota."""
+    code = getattr(e, "status_code", None) or getattr(e, "code", None)
+    if code == 429:
+        return True
     text = str(e).lower()
-    return any(
-        x in text
-        for x in (
-            "rate limit",
-            "too many requests",
-            "429",
-            "resource_exhausted",
-            "quota",
-        )
-    ) or getattr(e, "status_code", None) == 429
+    # google genai often uses these exact phrases
+    markers = (
+        "resource_exhausted",
+        "resource exhausted",
+        "rate limit exceeded",
+        "quota exceeded",
+        "too many requests",
+        "429",
+    )
+    return any(m in text for m in markers)
 
 
 def _parse_xml_tool_call(text: str) -> Optional[tuple[str, dict]]:
@@ -105,7 +109,6 @@ def _tools_to_gemini_decls(tools: list[dict]) -> list[dict]:
         if not name:
             continue
         params = fn.get("parameters") or {"type": "object", "properties": {}}
-        # Gemini is picky: ensure type object
         if not isinstance(params, dict):
             params = {"type": "object", "properties": {}}
         params.setdefault("type", "object")
@@ -154,7 +157,7 @@ class ModelGateway:
             from google import genai
 
             self._client = genai.Client(api_key=key)
-            logger.info("Gemini gateway ready")
+            logger.info("Gemini gateway ready model=%s", settings.gemini_model)
         except Exception as e:
             raise RuntimeError(f"فشل تهيئة Gemini: {e}") from e
 
@@ -206,7 +209,6 @@ class ModelGateway:
             config=config,
         )
 
-        # function calls
         try:
             for part in response.candidates[0].content.parts or []:
                 fc = getattr(part, "function_call", None)
@@ -235,17 +237,19 @@ class ModelGateway:
         tools: Optional[list[dict[str, Any]]] = None,
         use_tools: bool = True,
     ) -> ChatResult | SyntheticToolCall:
-        global _cooldown_until
+        global _cooldown_until, _last_error
+
         if time.time() < _cooldown_until:
+            remain = int(_cooldown_until - time.time())
             raise RuntimeError(
-                "Gemini في فترة انتظار بعد نفاد الحصة. حاول بعد قليل."
+                f"انتظار قصير بعد ضغط على Gemini ({remain}ث). أعد المحاولة."
             )
 
         system, contents = _messages_to_gemini(messages)
         last_error: Exception | None = None
+        errors: list[str] = []
 
         for model in self._model_list():
-            # 1) with tools  2) without tools
             for try_tools in ([True, False] if use_tools and tools else [False]):
                 try:
                     result = self._once(
@@ -259,22 +263,27 @@ class ModelGateway:
                         return result
                     if result.content:
                         return result
-                    # empty text — try next strategy
-                    logger.warning("Empty content from %s tools=%s", model, try_tools)
+                    errors.append(f"{model}:empty")
                     last_error = RuntimeError("empty_response")
                     continue
                 except Exception as e:
                     last_error = e
-                    if _is_rate_limit(e):
-                        sec = float(self.settings.provider_cooldown_sec)
+                    err_s = f"{model}: {e}"
+                    errors.append(err_s[:180])
+                    logger.warning("Gemini fail %s tools=%s: %s", model, try_tools, e)
+                    if _is_true_rate_limit(e):
+                        # short cooldown only on confirmed rate limit
+                        sec = min(float(self.settings.provider_cooldown_sec), 20.0)
                         _cooldown_until = time.time() + sec
-                        logger.warning("Gemini quota — cooldown %.0fs", sec)
-                        raise
-                    logger.warning(
-                        "Gemini %s tools=%s failed: %s", model, try_tools, e
-                    )
+                        _last_error = str(e)[:300]
+                        raise RuntimeError(
+                            f"Gemini rate/quota: {str(e)[:200]}"
+                        ) from e
                     continue
 
+        _last_error = " | ".join(errors)[:500]
         if last_error:
-            raise last_error
+            raise RuntimeError(
+                f"Gemini فشل: {_last_error}"
+            ) from last_error
         raise RuntimeError("Gemini returned no content")

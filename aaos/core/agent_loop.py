@@ -1,4 +1,4 @@
-"""AgentLoop — Gemini + CognitionOrchestrator (ToT / Reflection / A2A)."""
+"""AgentLoop — show real errors; no fake permanent quota message."""
 
 from __future__ import annotations
 
@@ -14,16 +14,12 @@ from aaos.identity import get_identity_manager
 from aaos.identity.state import get_operational_state
 from aaos.memory import MemoryStore, get_default_store
 from aaos.models import ModelGateway, ChatResult, SyntheticToolCall
+from aaos.models.gateway import get_last_gateway_error
 from aaos.planner import Planner
 from aaos.tools import ToolRegistry, build_default_registry
 from aaos.monitoring import get_metrics, Timer
 
 logger = logging.getLogger(__name__)
-
-RATE_LIMIT_MSG = (
-    "⏳ حصة Gemini منتهية مؤقتاً.\n"
-    "انتظر قليلاً أو تحقق من GEMINI_API_KEY في Render."
-)
 
 _IDENTITY_RE = re.compile(
     r"(من\s*أنت|من\s*انت|من\s*انا|من\s*أنا|عرف\s*نفسك|"
@@ -38,19 +34,31 @@ _TRIVIAL = re.compile(
 )
 
 
-def _is_rate_limit(e: Exception) -> bool:
-    text = str(e).lower()
-    return any(
-        x in text
-        for x in (
-            "rate limit",
-            "429",
-            "resource_exhausted",
-            "quota",
-            "cooldown",
-            "فترة انتظار",
+def _format_error(e: Exception) -> str:
+    msg = str(e)
+    low = msg.lower()
+    if any(x in low for x in ("429", "resource_exhausted", "rate/quota", "quota exceeded")):
+        return (
+            "⏳ Gemini رفض الطلب (حد المعدل أو الحصة).\n"
+            "• عطّل AAOS_ENABLE_REFLECTION و AAOS_ENABLE_TOT لتوفير الطلبات\n"
+            "• انتظر دقيقة ثم أعد المحاولة\n"
+            f"تفاصيل: {msg[:180]}"
         )
-    )
+    if "api key" in low or "permission" in low or "401" in low or "403" in low:
+        return (
+            "🔑 مشكلة في مفتاح Gemini أو صلاحياته.\n"
+            "أنشئ مفتاحاً جديداً من aistudio.google.com/apikey\n"
+            f"تفاصيل: {msg[:180]}"
+        )
+    if "not found" in low or "invalid" in low and "model" in low:
+        return (
+            "📦 اسم النموذج غير متاح لهذا المفتاح.\n"
+            "جرّب AAOS_GEMINI_MODEL=gemini-2.0-flash\n"
+            f"تفاصيل: {msg[:180]}"
+        )
+    extra = get_last_gateway_error()
+    detail = msg[:220] if msg else (extra[:220] if extra else "غير معروف")
+    return f"عذراً، تعذّر الرد من Gemini.\n{detail}"
 
 
 class AgentLoop:
@@ -122,10 +130,8 @@ class AgentLoop:
             if tools_hint:
                 plan_hint = f"أدوات مرشّحة: {', '.join(tools_hint)}"
 
-        # Tree of Thoughts (optional, gated)
         tot_ctx = self.cognition.build_tot_context(user_message)
 
-        # A2A: pull any pending peer partials for this user session
         a2a_bits = []
         for msg in self.bus.receive("general", max_messages=3):
             a2a_bits.append(f"[A2A {msg.sender}] {msg.payload}")
@@ -155,20 +161,12 @@ class AgentLoop:
                             messages, tools=specs, use_tools=True
                         )
                     except Exception as e:
-                        if _is_rate_limit(e):
-                            self.ops.record_error("rate_limit", str(e))
-                            await self.memory.add_message(
-                                user_id, "assistant", RATE_LIMIT_MSG
-                            )
-                            self.ops.end_goal(goal_id, ok=False)
-                            return RATE_LIMIT_MSG
                         logger.exception("Chat error")
                         self.ops.record_error("chat", str(e))
+                        reply = _format_error(e)
+                        await self.memory.add_message(user_id, "assistant", reply)
                         self.ops.end_goal(goal_id, ok=False)
-                        return (
-                            "عذراً، تعذّر الحصول على رد من Gemini حالياً. "
-                            f"التفاصيل: {str(e)[:200]}"
-                        )
+                        return reply
 
                     if isinstance(result, SyntheticToolCall):
                         tool_out = await self.tools.run(
@@ -177,7 +175,6 @@ class AgentLoop:
                         self.ops.record_tool(
                             result.name, not str(tool_out).startswith("خطأ")
                         )
-                        # A2A publish tool partial
                         self.bus.publish(
                             sender="executor",
                             topic="broadcast:tool",
@@ -207,9 +204,8 @@ class AgentLoop:
                         reply = (result.content or "").strip()
                         if not reply:
                             reply = (
-                                "لم أستطع توليد رد هذه المرة. أعد صياغة السؤال باختصار."
+                                "لم أستطع توليد رد هذه المرة. أعد صياغة السؤال."
                             )
-                        # Reflection gate
                         reply, _ref = self.cognition.reflect_and_maybe_revise(
                             user_message, reply
                         )
@@ -262,11 +258,7 @@ class AgentLoop:
             self.ops.end_goal(goal_id, ok=False)
             return final
         except Exception as e:
-            if _is_rate_limit(e):
-                await self.memory.add_message(user_id, "assistant", RATE_LIMIT_MSG)
-                self.ops.end_goal(goal_id, ok=False)
-                return RATE_LIMIT_MSG
             logger.exception("AgentLoop error")
             self.ops.record_error("agent_loop", str(e))
             self.ops.end_goal(goal_id, ok=False)
-            return f"عذراً، حدث خطأ: {str(e)[:200]}"
+            return _format_error(e)
