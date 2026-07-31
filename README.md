@@ -52,3 +52,4 @@ docs/ tests/ scripts/
 ## License
 
 MIT
+
