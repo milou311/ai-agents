@@ -3,6 +3,7 @@
 from aaos.cognition.reflection import Reflector, ReflectionResult
 from aaos.cognition.tot import TreeOfThoughts, ToTResult, ThoughtPath
 from aaos.cognition.a2a import A2ABus, A2AMessage, get_a2a_bus
+from aaos.cognition.orchestrator import CognitionOrchestrator, CognitionBundle
 
 __all__ = [
     "Reflector",
@@ -13,4 +14,6 @@ __all__ = [
     "A2ABus",
     "A2AMessage",
     "get_a2a_bus",
+    "CognitionOrchestrator",
+    "CognitionBundle",
 ]

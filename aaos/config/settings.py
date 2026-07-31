@@ -15,10 +15,11 @@ class Settings:
     gemini_model: str = "gemini-2.5-flash"
     history_limit: int = 6
     max_tool_rounds: int = 4
-    max_tokens: int = 768
+    max_tokens: int = 1024
     api_bearer_token: str = ""
     use_supervisor: bool = False
-    provider_cooldown_sec: float = 45.0
+    provider_cooldown_sec: float = 30.0
+    # Cognition — default off to save free-tier quota; enable when stable
     enable_reflection: bool = False
     enable_tot: bool = False
 
@@ -41,11 +42,11 @@ class Settings:
             gemini_model=os.getenv("AAOS_GEMINI_MODEL", "gemini-2.5-flash"),
             history_limit=int(os.getenv("AAOS_HISTORY_LIMIT", "6")),
             max_tool_rounds=int(os.getenv("AAOS_MAX_TOOL_ROUNDS", "4")),
-            max_tokens=int(os.getenv("AAOS_MAX_TOKENS", "768")),
+            max_tokens=int(os.getenv("AAOS_MAX_TOKENS", "1024")),
             api_bearer_token=os.getenv("AAOS_API_TOKEN", ""),
             use_supervisor=os.getenv("AAOS_USE_SUPERVISOR", "").lower()
             in {"1", "true", "yes"},
-            provider_cooldown_sec=float(os.getenv("AAOS_PROVIDER_COOLDOWN_SEC", "45")),
+            provider_cooldown_sec=float(os.getenv("AAOS_PROVIDER_COOLDOWN_SEC", "30")),
             enable_reflection=_flag("AAOS_ENABLE_REFLECTION", False),
             enable_tot=_flag("AAOS_ENABLE_TOT", False),
         )
