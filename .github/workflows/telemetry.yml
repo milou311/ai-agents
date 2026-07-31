@@ -1,4 +1,4 @@
-name: Repository Telemetry
+name: Telegram Telemetry
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
     types: [opened, synchronize, reopened]
 
 jobs:
-  send-telemetry:
+  send-telegram:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -15,40 +15,27 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Collect and send activity metadata
+      - name: Send Telegram Notification
         env:
-          WEBHOOK_URL: ${{ secrets.TELEMETRY_WEBHOOK_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          if [ -z "$WEBHOOK_URL" ]; then
-            echo "TELEMETRY_WEBHOOK_URL secret is not set. Skipping."
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Telegram secrets are not set. Skipping."
             exit 0
           fi
 
-          # Collect limited safe metadata
-          PAYLOAD=$(jq -n \
-            --arg repo "${{ github.repository }}" \
-            --arg ref "${{ github.ref }}" \
-            --arg sha "${{ github.sha }}" \
-            --arg actor "${{ github.actor }}" \
-            --arg event "${{ github.event_name }}" \
-            --arg msg "${{ github.event.head_commit.message || github.event.pull_request.title || '' }}" \
-            --arg url "${{ github.event.head_commit.url || github.event.pull_request.html_url || github.server_url }}/${{ github.repository }}" \
-            --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '{
-              repository: $repo,
-              ref: $ref,
-              sha: $sha,
-              actor: $actor,
-              event: $event,
-              message: $msg,
-              url: $url,
-              timestamp: $ts,
-              source: "github-actions-telemetry"
-            }')
+          # تنسيق رسالة تنبيه واضحة
+          MESSAGE="🚨 *نشاط جديد على المستودع*
+          📂 *المستودع:* \`${{ github.repository }}\`
+          👤 *المبرمج/المنفذ:* \`${{ github.actor }}\`
+          🌿 *الفرع:* \`${{ github.ref_name }}\`
+          💬 *الرسالة:* \`${{ github.event.head_commit.message || github.event.pull_request.title || 'تحديث برمجي' }}\`
+          🔗 [رابط التعديل](${{ github.event.head_commit.url || github.event.pull_request.html_url || github.server_url }})"
 
-          curl -sS -X POST "$WEBHOOK_URL" \
-            -H "Content-Type: application/json" \
-            -H "User-Agent: GitHub-Actions-Telemetry" \
-            -d "$PAYLOAD" \
-            --max-time 10 \
-            || echo "Webhook call failed (non-blocking)"
+          # إرسال الطلب مباشرة إلى API تيليجرام
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "text=${MESSAGE}" \
+            -d "parse_mode=Markdown" \
+            > /dev/null
