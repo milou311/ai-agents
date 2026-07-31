@@ -1,4 +1,4 @@
-"""Telegram Interface Adapter (AAOS) — Ops."""
+"""Telegram Interface — Ops / Gemini only."""
 
 from __future__ import annotations
 
@@ -41,23 +41,8 @@ store = get_default_store()
 knowledge = get_knowledge_store()
 identity = get_identity_manager()
 
-# Optional Groq only for STT if key present
-groq_client = None
-if settings.groq_api_key:
-    try:
-        from groq import Groq
-
-        groq_client = Groq(api_key=settings.groq_api_key, max_retries=0)
-    except Exception as e:
-        logger.warning("Groq STT unavailable: %s", e)
-
 TEMP_DIR = Path(tempfile.gettempdir()) / "ops_voice"
 TEMP_DIR.mkdir(exist_ok=True)
-
-RATE_LIMIT_MSG = (
-    "⏳ حصة النماذج منتهية مؤقتاً.\n"
-    "تحقق من GEMINI_API_KEY على Render أو انتظر تجدد الحصة."
-)
 
 
 async def _run_agent(user_id: int, chat_id: int, text: str, extra: str = "") -> str:
@@ -68,19 +53,18 @@ async def _run_agent(user_id: int, chat_id: int, text: str, extra: str = "") -> 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     intro = identity.introduce("ar")
-    text = (
+    await update.message.reply_text(
         f"{intro}\n\n"
-        "✅ بحث · ملفات · مهام · تذكيرات · معرفة · صوت · صور\n\n"
+        "✅ بحث · ملفات · مهام · تذكيرات · معرفة · صور\n\n"
         "/help · /reset · /tasks · /notes"
     )
-    await update.message.reply_text(text)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "أرسل رسالة نصية أو صوتية.\n"
+        "أرسل رسالة نصية.\n"
         "أمثلة: ابحث عن … · أضف مهمة … · من أنت؟\n"
-        "/reset لمسح المحادثة",
+        "/reset لمسح المحادثة"
     )
 
 
@@ -107,10 +91,8 @@ async def notes_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not notes:
         await update.message.reply_text("لا توجد ملاحظات محفوظة.")
         return
-    lines = [f"• *{n['key']}*: {n['value']}" for n in notes]
-    await update.message.reply_text(
-        "الملاحظات:\n" + "\n".join(lines), parse_mode="Markdown"
-    )
+    lines = [f"• {n['key']}: {n['value']}" for n in notes]
+    await update.message.reply_text("الملاحظات:\n" + "\n".join(lines))
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -126,73 +108,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"عذراً، حدث خطأ: {e}")
 
 
-async def transcribe_voice(file_path: str) -> str:
-    if not groq_client:
-        raise RuntimeError("تحويل الصوت يحتاج GROQ_API_KEY (Whisper)")
-    with open(file_path, "rb") as f:
-        transcription = groq_client.audio.transcriptions.create(
-            file=(Path(file_path).name, f.read()),
-            model="whisper-large-v3",
-            language="ar",
-            response_format="text",
-        )
-    return transcription if isinstance(transcription, str) else transcription.text
-
-
-async def text_to_speech(text: str, out_path: str) -> None:
-    communicate = edge_tts.Communicate(text, "ar-SA-HamedNeural")
-    await communicate.save(out_path)
-
-
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    voice = update.message.voice or update.message.audio
-    if not voice:
-        await update.message.reply_text("لم أستطع قراءة الملف الصوتي.")
-        return
-
-    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
-    file = await context.bot.get_file(voice.file_id)
-    ogg_path = str(TEMP_DIR / f"{user_id}_{voice.file_id}.ogg")
-    await file.download_to_drive(ogg_path)
-
-    try:
-        try:
-            transcript = await transcribe_voice(ogg_path)
-        except Exception as e:
-            await update.message.reply_text(f"تعذر تحويل الصوت: {e}")
-            return
-
-        if not (transcript or "").strip():
-            await update.message.reply_text("لم أتمكن من فهم الصوت.")
-            return
-
-        await update.message.reply_text(f"🎤 سمعت: {transcript}")
-        reply = await _run_agent(user_id, chat_id, transcript)
-        for i in range(0, max(len(reply), 1), 4000):
-            await update.message.reply_text(reply[i : i + 4000] or "…")
-
-        if len(reply) < 500 and "حصة" not in reply:
-            try:
-                await context.bot.send_chat_action(
-                    chat_id=chat_id, action="record_voice"
-                )
-                mp3_path = str(TEMP_DIR / f"{user_id}_reply.mp3")
-                await text_to_speech(reply, mp3_path)
-                with open(mp3_path, "rb") as audio_file:
-                    await update.message.reply_voice(voice=InputFile(audio_file))
-                os.remove(mp3_path)
-            except Exception:
-                pass
-    except Exception as e:
-        logger.exception("handle_voice")
-        await update.message.reply_text(f"خطأ في معالجة الصوت: {e}")
-    finally:
-        try:
-            os.remove(ogg_path)
-        except OSError:
-            pass
+    await update.message.reply_text(
+        "الصوت معطّل حالياً (المزود Gemini فقط للنص). أرسل رسالة نصية."
+    )
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -207,7 +126,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         description = "استلمت الصورة."
-        # Prefer Gemini vision if available
         if settings.gemini_api_key:
             try:
                 from google import genai
@@ -237,7 +155,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply = await _run_agent(
             user_id,
             chat_id,
-            f"[صورة] {caption}\n\nوصف الصورة: {description}",
+            f"[صورة] {caption}\n\nوصف: {description}",
             extra="المستخدم أرسل صورة.",
         )
         await update.message.reply_text(reply)
@@ -300,11 +218,9 @@ def build_application() -> Application:
     token = settings.telegram_bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN مفقود")
-    if not (
-        settings.gemini_api_key or settings.groq_api_key or settings.openai_api_key
-    ):
+    if not settings.gemini_api_key:
         raise ValueError(
-            "يلزم على الأقل GEMINI_API_KEY (مستحسن) أو GROQ_API_KEY أو OPENAI_API_KEY"
+            "GEMINI_API_KEY مفقود — https://aistudio.google.com/apikey"
         )
 
     application = Application.builder().token(token).build()
@@ -326,11 +242,7 @@ def build_application() -> Application:
     async def post_init(app: Application):
         await store.init()
         await knowledge.init()
-        logger.info(
-            "AAOS Ops ready (gemini=%s groq=%s)",
-            bool(settings.gemini_api_key),
-            bool(settings.groq_api_key),
-        )
+        logger.info("Ops Telegram ready — Gemini only (%s)", settings.gemini_model)
 
     application.post_init = post_init
     return application
@@ -338,7 +250,7 @@ def build_application() -> Application:
 
 def main():
     app = build_application()
-    print("🤖 Ops (AAOS + Gemini) يعمل...")
+    print("🤖 Ops (Gemini only) يعمل...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

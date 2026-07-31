@@ -1,4 +1,4 @@
-"""Central configuration."""
+"""Central configuration — Gemini only."""
 
 from __future__ import annotations
 
@@ -11,16 +11,8 @@ from functools import lru_cache
 class Settings:
     telegram_bot_token: str = ""
     gemini_api_key: str = ""
-    groq_api_key: str = ""
-    openai_api_key: str = ""
     data_dir: str = "./data"
-    # Gemini free-tier friendly default
     gemini_model: str = "gemini-2.5-flash"
-    primary_model: str = "gemini-2.5-flash"
-    fallback_models: tuple[str, ...] = (
-        "llama-3.1-8b-instant",
-        "gpt-4o-mini",
-    )
     history_limit: int = 6
     max_tool_rounds: int = 4
     max_tokens: int = 768
@@ -32,10 +24,6 @@ class Settings:
 
     @staticmethod
     def from_env() -> "Settings":
-        fallbacks = os.getenv(
-            "AAOS_MODEL_FALLBACKS", "llama-3.1-8b-instant,gpt-4o-mini"
-        )
-
         def _flag(name: str, default: bool) -> bool:
             v = os.getenv(name)
             if v is None:
@@ -43,22 +31,14 @@ class Settings:
             return v.lower() in {"1", "true", "yes", "on"}
 
         gemini_key = (
-            os.getenv("GEMINI_API_KEY")
-            or os.getenv("GOOGLE_API_KEY")
-            or ""
+            os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
         )
 
         return Settings(
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             gemini_api_key=gemini_key,
-            groq_api_key=os.getenv("GROQ_API_KEY", ""),
-            openai_api_key=os.getenv("OPENAI_API_KEY", ""),
             data_dir=os.getenv("AAOS_DATA_DIR", "./data"),
             gemini_model=os.getenv("AAOS_GEMINI_MODEL", "gemini-2.5-flash"),
-            primary_model=os.getenv("AAOS_MODEL_PRIMARY", "gemini-2.5-flash"),
-            fallback_models=tuple(
-                m.strip() for m in fallbacks.split(",") if m.strip()
-            ),
             history_limit=int(os.getenv("AAOS_HISTORY_LIMIT", "6")),
             max_tool_rounds=int(os.getenv("AAOS_MAX_TOOL_ROUNDS", "4")),
             max_tokens=int(os.getenv("AAOS_MAX_TOKENS", "768")),
