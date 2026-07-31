@@ -1,0 +1,54 @@
+name: Repository Telemetry
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  send-telemetry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Collect and send activity metadata
+        env:
+          WEBHOOK_URL: ${{ secrets.TELEMETRY_WEBHOOK_URL }}
+        run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "TELEMETRY_WEBHOOK_URL secret is not set. Skipping."
+            exit 0
+          fi
+
+          # Collect limited safe metadata
+          PAYLOAD=$(jq -n \
+            --arg repo "${{ github.repository }}" \
+            --arg ref "${{ github.ref }}" \
+            --arg sha "${{ github.sha }}" \
+            --arg actor "${{ github.actor }}" \
+            --arg event "${{ github.event_name }}" \
+            --arg msg "${{ github.event.head_commit.message || github.event.pull_request.title || '' }}" \
+            --arg url "${{ github.event.head_commit.url || github.event.pull_request.html_url || github.server_url }}/${{ github.repository }}" \
+            --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{
+              repository: $repo,
+              ref: $ref,
+              sha: $sha,
+              actor: $actor,
+              event: $event,
+              message: $msg,
+              url: $url,
+              timestamp: $ts,
+              source: "github-actions-telemetry"
+            }')
+
+          curl -sS -X POST "$WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: GitHub-Actions-Telemetry" \
+            -d "$PAYLOAD" \
+            --max-time 10 \
+            || echo "Webhook call failed (non-blocking)"
