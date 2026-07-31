@@ -17,7 +17,6 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from groq import Groq, RateLimitError, APIStatusError
 import edge_tts
 
 from aaos.config import get_settings
@@ -41,18 +40,23 @@ supervisor = Supervisor(loop)
 store = get_default_store()
 knowledge = get_knowledge_store()
 identity = get_identity_manager()
-groq_client = (
-    Groq(api_key=settings.groq_api_key, max_retries=0)
-    if settings.groq_api_key
-    else None
-)
+
+# Optional Groq only for STT if key present
+groq_client = None
+if settings.groq_api_key:
+    try:
+        from groq import Groq
+
+        groq_client = Groq(api_key=settings.groq_api_key, max_retries=0)
+    except Exception as e:
+        logger.warning("Groq STT unavailable: %s", e)
 
 TEMP_DIR = Path(tempfile.gettempdir()) / "ops_voice"
 TEMP_DIR.mkdir(exist_ok=True)
 
 RATE_LIMIT_MSG = (
-    "⏳ تم استهلاك الحصة الحالية من مزوّد الذكاء الاصطناعي.\n"
-    "أضف OPENAI_API_KEY في Render أو انتظر تجدد حصة Groq."
+    "⏳ حصة النماذج منتهية مؤقتاً.\n"
+    "تحقق من GEMINI_API_KEY على Render أو انتظر تجدد الحصة."
 )
 
 
@@ -124,7 +128,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def transcribe_voice(file_path: str) -> str:
     if not groq_client:
-        raise RuntimeError("Groq not configured for STT")
+        raise RuntimeError("تحويل الصوت يحتاج GROQ_API_KEY (Whisper)")
     with open(file_path, "rb") as f:
         transcription = groq_client.audio.transcriptions.create(
             file=(Path(file_path).name, f.read()),
@@ -156,8 +160,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         try:
             transcript = await transcribe_voice(ogg_path)
-        except (RateLimitError, APIStatusError):
-            await update.message.reply_text(RATE_LIMIT_MSG)
+        except Exception as e:
+            await update.message.reply_text(f"تعذر تحويل الصوت: {e}")
             return
 
         if not (transcript or "").strip():
@@ -169,7 +173,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for i in range(0, max(len(reply), 1), 4000):
             await update.message.reply_text(reply[i : i + 4000] or "…")
 
-        if len(reply) < 500 and "الحصة" not in reply:
+        if len(reply) < 500 and "حصة" not in reply:
             try:
                 await context.bot.send_chat_action(
                     chat_id=chat_id, action="record_voice"
@@ -202,37 +206,33 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
     try:
-        description = "استلمت الصورة. صف ما تريد وسأساعدك."
-        if groq_client:
+        description = "استلمت الصورة."
+        # Prefer Gemini vision if available
+        if settings.gemini_api_key:
             try:
-                import base64
+                from google import genai
+                from google.genai import types
 
+                client = genai.Client(api_key=settings.gemini_api_key)
                 with open(img_path, "rb") as f:
-                    b64 = base64.b64encode(f.read()).decode()
-                response = groq_client.chat.completions.create(
-                    model="llama-3.2-90b-vision-preview",
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": caption},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:image/jpeg;base64,{b64}"
-                                    },
-                                },
+                    img_bytes = f.read()
+                response = client.models.generate_content(
+                    model=settings.gemini_model,
+                    contents=[
+                        types.Content(
+                            role="user",
+                            parts=[
+                                types.Part.from_bytes(
+                                    data=img_bytes, mime_type="image/jpeg"
+                                ),
+                                types.Part.from_text(text=caption),
                             ],
-                        }
+                        )
                     ],
-                    max_tokens=512,
                 )
-                description = response.choices[0].message.content
-            except (RateLimitError, APIStatusError):
-                await update.message.reply_text(RATE_LIMIT_MSG)
-                return
-            except Exception:
-                pass
+                description = (response.text or description).strip()
+            except Exception as e:
+                logger.warning("Gemini vision failed: %s", e)
 
         reply = await _run_agent(
             user_id,
@@ -300,9 +300,13 @@ def build_application() -> Application:
     token = settings.telegram_bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise ValueError("TELEGRAM_BOT_TOKEN مفقود")
-    if not os.getenv("GEMINI_API_KEY"):
-        raise ValueError("يلزم GEMINI_API_KEY")
-    
+    if not (
+        settings.gemini_api_key or settings.groq_api_key or settings.openai_api_key
+    ):
+        raise ValueError(
+            "يلزم على الأقل GEMINI_API_KEY (مستحسن) أو GROQ_API_KEY أو OPENAI_API_KEY"
+        )
+
     application = Application.builder().token(token).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
@@ -322,7 +326,11 @@ def build_application() -> Application:
     async def post_init(app: Application):
         await store.init()
         await knowledge.init()
-        logger.info("AAOS Ops Telegram ready")
+        logger.info(
+            "AAOS Ops ready (gemini=%s groq=%s)",
+            bool(settings.gemini_api_key),
+            bool(settings.groq_api_key),
+        )
 
     application.post_init = post_init
     return application
@@ -330,7 +338,7 @@ def build_application() -> Application:
 
 def main():
     app = build_application()
-    print("🤖 Ops (AAOS) يعمل...")
+    print("🤖 Ops (AAOS + Gemini) يعمل...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

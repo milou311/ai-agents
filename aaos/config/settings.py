@@ -10,18 +10,23 @@ from functools import lru_cache
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str = ""
+    gemini_api_key: str = ""
     groq_api_key: str = ""
     openai_api_key: str = ""
     data_dir: str = "./data"
-    primary_model: str = "llama-3.3-70b-versatile"
-    fallback_models: tuple[str, ...] = ("llama-3.1-8b-instant", "gpt-4o-mini")
+    # Gemini free-tier friendly default
+    gemini_model: str = "gemini-2.5-flash"
+    primary_model: str = "gemini-2.5-flash"
+    fallback_models: tuple[str, ...] = (
+        "llama-3.1-8b-instant",
+        "gpt-4o-mini",
+    )
     history_limit: int = 6
     max_tool_rounds: int = 4
     max_tokens: int = 768
     api_bearer_token: str = ""
     use_supervisor: bool = False
     provider_cooldown_sec: float = 45.0
-    # Default OFF to protect free-tier quotas (enable when you have headroom)
     enable_reflection: bool = False
     enable_tot: bool = False
 
@@ -37,14 +42,20 @@ class Settings:
                 return default
             return v.lower() in {"1", "true", "yes", "on"}
 
+        gemini_key = (
+            os.getenv("GEMINI_API_KEY")
+            or os.getenv("GOOGLE_API_KEY")
+            or ""
+        )
+
         return Settings(
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+            gemini_api_key=gemini_key,
             groq_api_key=os.getenv("GROQ_API_KEY", ""),
             openai_api_key=os.getenv("OPENAI_API_KEY", ""),
             data_dir=os.getenv("AAOS_DATA_DIR", "./data"),
-            primary_model=os.getenv(
-                "AAOS_MODEL_PRIMARY", "llama-3.3-70b-versatile"
-            ),
+            gemini_model=os.getenv("AAOS_GEMINI_MODEL", "gemini-2.5-flash"),
+            primary_model=os.getenv("AAOS_MODEL_PRIMARY", "gemini-2.5-flash"),
             fallback_models=tuple(
                 m.strip() for m in fallbacks.split(",") if m.strip()
             ),
